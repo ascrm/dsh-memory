@@ -16,8 +16,6 @@ import { sanitizeInjectionText, sha256 } from '../store/sanitize.ts'
 
 /** recall 提示词段名称。 */
 export const RECALL_SECTION_NAME = 'memory:recall'
-/** recall 提示词段顺序；核心层是 4000，这里紧接其后。 */
-export const RECALL_SECTION_ORDER = 4100
 
 /** 一次 recall 的结果。 */
 export interface RecallPack {

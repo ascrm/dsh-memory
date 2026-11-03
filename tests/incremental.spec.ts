@@ -70,4 +70,27 @@ describe('JSON incremental index', () => {
     expect(Object.keys(after.files ?? {})).toHaveLength(119)
     expect(Object.keys(after.docs)).toHaveLength(119)
   })
+
+  it('rebuilds the JSON index when cjkUnigrams changes', async () => {
+    harness = await createStore()
+    const written = await harness.store.write({
+      slug: 'cjk-config',
+      kind: 'preference',
+      title: '部署命令',
+      summary: '部署使用 pnpm deploy',
+      body: '部署流程',
+      scope: userScope
+    })
+    const changed = new MemoryStore(harness.root, { ...harness.config, cjkUnigrams: true })
+    try {
+      const hits = await changed.search({ query: '部', scope: 'user' })
+      expect(hits.some((hit) => hit.id === written.record.id)).toBe(true)
+      const json = JSON.parse(await readFile(join(harness.root, 'user', 'index.json'), 'utf8')) as {
+        cjkUnigrams?: boolean
+      }
+      expect(json.cjkUnigrams).toBe(true)
+    } finally {
+      changed.close()
+    }
+  })
 })

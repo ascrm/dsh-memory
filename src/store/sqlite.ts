@@ -47,11 +47,13 @@ const BM25_WEIGHTS = '0.0, 3.0, 2.0, 2.0, 1.0'
 export class SqliteIndex {
   private readonly root: string
   private readonly scope: MemoryScope
+  private readonly cjkUnigrams: boolean
   private db: DatabaseSync | undefined
 
-  constructor(root: string, scope: MemoryScope) {
+  constructor(root: string, scope: MemoryScope, cjkUnigrams = false) {
     this.root = root
     this.scope = scope
+    this.cjkUnigrams = cjkUnigrams
   }
 
   /** 数据库文件路径。 */
@@ -96,6 +98,10 @@ export class SqliteIndex {
         mtime REAL NOT NULL,
         content_hash TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS memory_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
         id UNINDEXED,
         title,
@@ -106,7 +112,29 @@ export class SqliteIndex {
       CREATE INDEX IF NOT EXISTS memory_docs_kind ON memory_docs(kind);
       CREATE INDEX IF NOT EXISTS memory_docs_trust ON memory_docs(trust);
     `)
+    const meta = db
+      .prepare("SELECT value FROM memory_meta WHERE key = 'cjkUnigrams'")
+      .get() as { value?: string } | undefined
+    const storedUnigrams = meta?.value === '1'
+    if (meta === undefined) {
+      const row = db.prepare('SELECT COUNT(*) AS count FROM memory_docs').get() as
+        | { count?: number }
+        | undefined
+      if (this.cjkUnigrams && Number(row?.count ?? 0) > 0) {
+        db.exec('DELETE FROM memory_fts; DELETE FROM memory_docs; DELETE FROM memory_files;')
+      }
+      db.prepare("INSERT INTO memory_meta (key, value) VALUES ('cjkUnigrams', ?)").run(
+        this.cjkUnigrams ? '1' : '0'
+      )
+    } else if (storedUnigrams !== this.cjkUnigrams) {
+      // tokenizer 配置变了：旧索引的 FTS/postings 不能复用，清空后由下一次 sync 重建。
+      db.exec('DELETE FROM memory_fts; DELETE FROM memory_docs; DELETE FROM memory_files;')
+      db.prepare("UPDATE memory_meta SET value = ? WHERE key = 'cjkUnigrams'").run(
+        this.cjkUnigrams ? '1' : '0'
+      )
+    }
     this.db = db
+    await hardenSqlitePermissions(this.file)
   }
 
   /** 数据库文件是否已存在。 */
@@ -234,7 +262,7 @@ export class SqliteIndex {
     db.exec('BEGIN')
     try {
       for (const { stat, record, contentHash } of changed) {
-        const doc = toIndexedDoc(record, indexRecord(record).length)
+        const doc = toIndexedDoc(record, indexRecord(record, { cjkUnigrams: this.cjkUnigrams }).length)
         upsertDoc.run(
           record.id,
           scopeKey,
@@ -259,10 +287,10 @@ export class SqliteIndex {
         deleteFts.run(record.id)
         insertFts.run(
           record.id,
-          tokenize(record.title).join(' '),
-          tokenize(record.summary).join(' '),
-          tokenize(record.tags.join(' ')).join(' '),
-          tokenize(record.body).join(' ')
+          tokenize(record.title, { cjkUnigrams: this.cjkUnigrams }).join(' '),
+          tokenize(record.summary, { cjkUnigrams: this.cjkUnigrams }).join(' '),
+          tokenize(record.tags.join(' '), { cjkUnigrams: this.cjkUnigrams }).join(' '),
+          tokenize(record.body, { cjkUnigrams: this.cjkUnigrams }).join(' ')
         )
         upsertFile.run(record.id, stat.size, stat.mtimeMs, contentHash)
       }
@@ -335,7 +363,7 @@ export class SqliteIndex {
     }
   ): Promise<SqliteHit[]> {
     await this.open()
-    const terms = [...new Set(tokenize(query))]
+    const terms = [...new Set(tokenize(query, { cjkUnigrams: this.cjkUnigrams }))]
     if (terms.length === 0) return []
     const match = terms.map((term) => `"${term}"`).join(' OR ')
     const clauses = [
@@ -390,6 +418,18 @@ export class SqliteIndex {
   close(): void {
     this.db?.close()
     this.db = undefined
+    void hardenSqlitePermissions(this.file)
+  }
+}
+
+/** 尽力收紧索引文件权限；目录本身已是 0700。 */
+async function hardenSqlitePermissions(file: string): Promise<void> {
+  for (const target of [file, `${file}-wal`, `${file}-shm`]) {
+    try {
+      await fs.chmod(target, 0o600)
+    } catch {
+      // Windows ACL 或文件尚未创建时忽略。
+    }
   }
 }
 
@@ -410,7 +450,8 @@ async function assertSqliteHeader(file: string): Promise<void> {
   }
 }
 
-function docFromRow(row: Record<string, unknown>): IndexedDoc {  return {
+function docFromRow(row: Record<string, unknown>): IndexedDoc {
+  return {
     id: String(row.id),
     slug: String(row.slug),
     kind: String(row.kind) as IndexedDoc['kind'],
@@ -432,7 +473,8 @@ function docFromRow(row: Record<string, unknown>): IndexedDoc {  return {
   }
 }
 
-function parseStringArray(value: unknown): string[] {  if (typeof value !== 'string' || value.length === 0) return []
+function parseStringArray(value: unknown): string[] {
+  if (typeof value !== 'string' || value.length === 0) return []
   try {
     const parsed = JSON.parse(value) as unknown
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []

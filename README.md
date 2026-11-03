@@ -39,6 +39,7 @@ dsh plugin add dsh-memory
 | `recallIncludeCandidates` | `false` | recall 是否包含未验证候选 |
 | `recallTimeoutMs` | `500` | 冷索引超时后放弃本回合 recall |
 | `indexBackend` | `json` | 派生索引后端：`json` 或 `sqlite`（FTS5） |
+| `cjkUnigrams` | `false` | 是否额外索引 CJK 单字；开启后支持单字查询，但索引更大 |
 | `enableUserScope` | `true` | 启用用户级记忆 |
 | `enableAutoCapture` | `false` | agent 结束时自动提取候选 |
 | `autoCaptureMaxTokens` | `2048` | 自动提取输出上限 |
@@ -60,6 +61,7 @@ dsh plugin add dsh-memory
     projectScope: git
     enableRecall: true
     indexBackend: json
+    cjkUnigrams: false
     enableAutoCapture: false
 ```
 
@@ -158,7 +160,7 @@ verified --内容变化（title/summary/body/kind）--> candidate（evidence 失
 
 ## 检索
 
-- 分词：拉丁词 + 轻量英文词干（复数/ing/ed）；CJK 同时切单字和二元组，单字查询也能命中；代码符号作为分隔符。
+- 分词：拉丁词 + 轻量英文词干（复数/ing/ed）；CJK 默认切二元组，`cjkUnigrams=true` 时额外索引单字；代码符号作为分隔符。
 - BM25：`k1=1.2`、`b=0.75`；字段权重 title 3 / summary 2 / tags 2 / body 1。
 - 最终分数：BM25 0.55 + recency 0.15 + trust 0.12 + importance 0.08 + scope 0.05 + kind 0.05。
 - 去重后使用 MMR（`lambda=0.7`）在 top-20 内选出 top-k。
@@ -287,11 +289,12 @@ pnpm bench:json     # 10k 条性能回归（JSON 索引）
 - **核心层冷启动**：`systemPrompt.section.text` 必须同步且不读盘；apply 阶段会异步预热用户级 core pack，若首轮组装早于预热完成，仍可能为空，下一轮即有内容。
 - **recall 依赖宿主事件**：`agent/inbox/claimed` 与 `system-prompt/assemble` 的时序已按当前 dsh-agent-loop 验证；更老或不同宿主若不发该事件，recall 会静默跳过。
 - **故意不做文件 watcher**：外部手改在下次 `agent/created` / `memory_refresh` 时通过 state/哈希检测。
-- **索引规模**：默认 `indexBackend: json`；10k 条进程重开约 5–7s。设置 `indexBackend: sqlite` 可用 FTS5，重开通常 < 1s，但首次建库仍需全量解析 Markdown（本机 10k 约 18s），且依赖 Node 的 `node:sqlite`（不可用/损坏时自动回退 JSON，30 秒后重试）。
-- **SQLite 写入**：默认每次写入会同步大小/修改时间并增量更新数据库；10k 条单次写入约数百毫秒，明显优于 JSON 全量重建，但不是常数时间。
-- **JSON 增量写入**：写入后会增量更新 docs/postings，并重写 index.json；10k 条单次写入约 0.2s，仍会随索引大小线性增长。
+- **索引规模**：默认 `indexBackend: json`；10k 条进程重开约 5–6s。设置 `indexBackend: sqlite` 可用 FTS5，重开通常 < 1s，但首次建库仍需全量解析 Markdown（本机 10k 约 12s），且依赖 Node 的 `node:sqlite`（不可用/损坏时自动回退 JSON，30 秒后重试）。
+- **SQLite 写入**：默认每次写入会同步大小/修改时间并增量更新数据库；10k 条单次写入约 0.5s，明显优于 JSON 全量重建，但不是常数时间。
+- **JSON 增量写入**：写入后会增量更新 docs/postings，并重写 index.json；10k 条单次写入约 0.16s，仍会随索引大小线性增长。
 - **SQLite 快路径**：文件 size/mtime 未变时不会重读内容；极端情况下手改保持相同 size/mtime，需要 `memory_refresh` 强制重建。
-- **检索没有向量模型**：当前是词法检索（BM25 + 元数据 + 单字/词干）；embedding/hybrid 需要外部 embedding provider，未内置。
+- **CJK 单字索引**：`cjkUnigrams` 默认关闭；开启后支持单字查询，但 postings/FTS 会明显变大，10k 搜索 p95 也会上升。切换该配置会使旧索引自动失效并重建。
+- **检索没有向量模型**：当前是词法检索（BM25 + 元数据 + 词干）；embedding/hybrid 需要外部 embedding provider，未内置。
 - **与 dsh-auto-memory 共用目录**：两者默认都使用 `$DSH_HOME/memory`，且都有 `audit.jsonl`。同时安装时请为其中一个设置独立的 `memoryDir`，或禁用另一个。
 - **不内置 React 面板**：提供 CLI 与 HTTP 面板 API；React 客户端仍属可选扩展。
 - `pnpm-workspace.yaml` 固定 `nodeLinker: hoisted`，用于在 Windows 沙箱/打包器下正确解析 tsdown 的传递依赖。

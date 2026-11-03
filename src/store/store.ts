@@ -268,7 +268,15 @@ export class MemoryStore {
       finalSignature = computeStatSignature(repairedStats)
       fileEntries = new Map(repairedFiles.map((file) => [file.filenameId, file.entry]))
     }
-    const index = buildScopeIndex(records, key, finalHash, this.version, malformed, fileEntries)
+    const index = buildScopeIndex(
+      records,
+      key,
+      finalHash,
+      this.version,
+      malformed,
+      fileEntries,
+      this.config.cjkUnigrams
+    )
     this.cache.set(key, index)
     await this.persistIndex(scope, index)
     this.meta.set(key, {
@@ -287,7 +295,7 @@ export class MemoryStore {
     const key = scopeKey(scope)
     let index = this.sqliteIndexes.get(key)
     if (index === undefined) {
-      index = new SqliteIndex(this.root, scope)
+      index = new SqliteIndex(this.root, scope, this.config.cjkUnigrams)
       this.sqliteIndexes.set(key, index)
     }
     return index
@@ -909,7 +917,7 @@ export class MemoryStore {
     const docCount = entries.length
     if (docCount === 0) return []
     const avgdl = totalLength / docCount
-    const terms = [...new Set(tokenize(options.query))]
+    const terms = [...new Set(tokenize(options.query, { cjkUnigrams: this.config.cjkUnigrams }))]
     if (terms.length === 0) return []
 
     // 只给包含查询词的文档打分；直接查 postings，
@@ -1003,8 +1011,17 @@ export class MemoryStore {
       bm25: item.bm25,
       score: item.score
     }))
-    const deduped = dedupeCandidates(pool)
     const limit = Math.min(Math.max(1, options.limit ?? this.config.maxSearchResults), 20)
+    return this.finalizeSearch(pool, options, limit)
+  }
+
+  /** JSON 与 SQLite 两条召回路径共享的去重、MMR、命中和审计。 */
+  private finalizeSearch(
+    scored: ScoredMemory[],
+    options: MemorySearchOptions,
+    limit: number
+  ): MemorySearchHit[] {
+    const deduped = dedupeCandidates(scored.slice(0, 40))
     const selected = mmrSelect(deduped.slice(0, 20), limit)
     const hits: MemorySearchHit[] = selected.map((item) => ({
       id: item.record.id,
@@ -1089,31 +1106,7 @@ export class MemoryStore {
     scored.sort(
       (a, b) => b.score - a.score || b.record.updatedAt - a.record.updatedAt || a.record.id.localeCompare(b.record.id)
     )
-    const deduped = dedupeCandidates(scored.slice(0, 40))
-    const selected = mmrSelect(deduped.slice(0, 20), limit)
-    const hits: MemorySearchHit[] = selected.map((item) => ({
-      id: item.record.id,
-      slug: item.record.slug,
-      kind: item.record.kind,
-      title: item.record.title,
-      summary: item.record.summary,
-      trust: item.record.trust,
-      score: Number(item.score.toFixed(6)),
-      scope: item.record.scope,
-      updatedAt: item.record.updatedAt,
-      pinned: item.record.pinned
-    }))
-    if (options.audit !== false) {
-      void this.audit.append({
-        ts: this.now(),
-        event: 'search',
-        actor: options.actor ?? 'model',
-        sessionId: options.sessionId,
-        queryHash: sha256(options.query),
-        resultIds: hits.map((hit) => hit.id)
-      })
-    }
-    return hits
+    return this.finalizeSearch(scored, options, limit)
   }
 
   /** 列出摘要，供调试和面板视图使用。 */
@@ -1444,6 +1437,8 @@ export class MemoryStore {
 
     for (const current of scopes) {
       await this.withScopeLock(current, async () => {
+        const currentKey = scopeKey(current)
+        const currentPairs: Array<{ a: string; b: string; scope: string }> = []
         const index = await this.getScopeIndex(current, { refresh: true })
         scanned += index.docs.size
         const byKind = new Map<string, IndexedDoc[]>()
@@ -1457,7 +1452,7 @@ export class MemoryStore {
         for (const docs of byKind.values()) {
           const byToken = new Map<string, IndexedDoc[]>()
           for (const doc of docs) {
-            for (const term of new Set(tokenize(doc.summary))) {
+            for (const term of new Set(tokenize(doc.summary, { cjkUnigrams: this.config.cjkUnigrams }))) {
               const bucket = byToken.get(term) ?? []
               bucket.push(doc)
               byToken.set(term, bucket)
@@ -1474,14 +1469,17 @@ export class MemoryStore {
                 const key = a.id < b.id ? `${a.id}\u0000${b.id}` : `${b.id}\u0000${a.id}`
                 if (seen.has(key)) continue
                 seen.add(key)
-                pairs.push({ a: a.id, b: b.id, scope: scopeKey(current) })
+                const pair = { a: a.id, b: b.id, scope: currentKey }
+                currentPairs.push(pair)
+                pairs.push(pair)
               }
             }
           }
         }
 
         if (options.mark !== true) return
-        for (const pair of pairs.filter((item) => item.scope === scopeKey(current))) {
+        let scopeMarked = 0
+        for (const pair of currentPairs) {
           const a = await this.readInScope(pair.a, current)
           const b = await this.readInScope(pair.b, current)
           if (a === undefined || b === undefined) continue
@@ -1497,9 +1495,10 @@ export class MemoryStore {
           if (aFile === undefined || bFile === undefined) continue
           await writeFileAtomic(aFile, serializeMemoryFile(a), { mode: 0o600, dirMode: 0o700 })
           await writeFileAtomic(bFile, serializeMemoryFile(b), { mode: 0o600, dirMode: 0o700 })
+          scopeMarked += 1
           marked += 1
         }
-        if (marked > 0) {
+        if (scopeMarked > 0) {
           this.invalidateScope(current)
           await this.getScopeIndex(current, { refresh: true })
         }
@@ -1854,7 +1853,7 @@ export class MemoryStore {
     } catch {
       return null
     }
-    const index = parseScopeIndexJson(text, key, scope, this.version)
+    const index = parseScopeIndexJson(text, key, scope, this.version, this.config.cjkUnigrams)
     if (index === null || index.sourceHash !== hash) return null
     return index
   }
@@ -1880,7 +1879,7 @@ export class MemoryStore {
 
   private applyIndexRecord(index: ScopeIndex, record: MemoryRecord): void {
     this.removeIndexPostings(index, record.id)
-    const terms = indexRecord(record)
+    const terms = indexRecord(record, { cjkUnigrams: this.config.cjkUnigrams })
     index.docs.set(record.id, toIndexedDoc(record, terms.length))
     for (const [term, tf] of terms.terms) {
       let posting = index.postings.get(term)

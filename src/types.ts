@@ -245,6 +245,8 @@ export interface MemoryConfig {
   recallTimeoutMs: number
   /** 派生索引后端：JSON 或可选 SQLite FTS5。 */
   indexBackend: 'json' | 'sqlite'
+  /** 是否同时索引 CJK 单字；默认关闭以控制索引体积。 */
+  cjkUnigrams: boolean
   enableUserScope: boolean
   enableAutoCapture: boolean
   autoCaptureMaxTokens: number

@@ -33,6 +33,10 @@ describe('SQLite FTS5 backend', () => {
       scope: userScope
     })
     expect((await stat(join(harness.root, 'user', 'index.sqlite'))).isFile()).toBe(true)
+    if (process.platform !== 'win32') {
+      const mode = (await stat(join(harness.root, 'user', 'index.sqlite'))).mode & 0o777
+      expect(mode).toBe(0o600)
+    }
     await expect(stat(join(harness.root, 'user', 'index.json'))).rejects.toThrow()
 
     const hits = await harness.store.search({ query: 'pnpm build', scope: 'user' })
@@ -106,6 +110,26 @@ describe('SQLite FTS5 backend', () => {
       expect(await reopened.list({ scope: 'user' })).toHaveLength(0)
     } finally {
       reopened.close()
+    }
+  })
+
+  it('invalidates the sqlite index when cjkUnigrams changes', async () => {
+    harness = await createStore({ indexBackend: 'sqlite' })
+    const written = await harness.store.write({
+      slug: 'cjk-single-char',
+      kind: 'preference',
+      title: '部署命令',
+      summary: '部署使用 pnpm deploy',
+      body: '部署流程',
+      scope: userScope
+    })
+    harness.store.close()
+    const changed = new MemoryStore(harness.root, { ...harness.config, cjkUnigrams: true })
+    try {
+      const hits = await changed.search({ query: '部', scope: 'user' })
+      expect(hits.some((hit) => hit.id === written.record.id)).toBe(true)
+    } finally {
+      changed.close()
     }
   })
 

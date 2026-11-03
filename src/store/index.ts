@@ -60,6 +60,8 @@ export interface ScopeIndex {
   backend?: 'json' | 'sqlite'
   /** 每个源文件的指纹；用于 JSON 后端的增量 sourceHash 更新。 */
   files?: Map<string, SourceFileEntry>
+  /** 构建该索引时是否启用 CJK 单字。 */
+  cjkUnigrams?: boolean
 }
 
 /** 单个文件的来源指纹条目。 */
@@ -113,12 +115,13 @@ export function buildScopeIndex(
   sourceHash: string,
   version: number,
   malformed: MalformedFile[] = [],
-  files?: Map<string, SourceFileEntry>
+  files?: Map<string, SourceFileEntry>,
+  cjkUnigrams = false
 ): ScopeIndex {
   const docs = new Map<string, IndexedDoc>()
   const postings = new Map<string, Map<string, number>>()
   for (const record of records) {
-    const doc = indexRecord(record)
+    const doc = indexRecord(record, { cjkUnigrams })
     docs.set(record.id, toIndexedDoc(record, doc.length))
     for (const [term, tf] of doc.terms) {
       let posting = postings.get(term)
@@ -139,7 +142,8 @@ export function buildScopeIndex(
     version,
     malformed,
     hydrated: true,
-    files
+    files,
+    cjkUnigrams
   }
 }
 
@@ -153,6 +157,7 @@ export interface IndexJson {
   docs: Record<string, IndexedDoc>
   postings: Record<string, Record<string, number>>
   files?: Record<string, SourceFileEntry>
+  cjkUnigrams?: boolean
 }
 
 /** 把索引序列化为磁盘上的 JSON 形态。 */
@@ -175,7 +180,8 @@ export function serializeScopeIndex(index: ScopeIndex): IndexJson {
     postings,
     ...(index.files !== undefined && index.files.size > 0
       ? { files: Object.fromEntries(index.files) }
-      : {})
+      : {}),
+    ...(index.cjkUnigrams === true ? { cjkUnigrams: true } : {})
   }
 }
 
@@ -184,7 +190,8 @@ export function parseScopeIndexJson(
   text: string,
   scopeKey: string,
   scope: MemoryScope,
-  version: number
+  version: number,
+  cjkUnigrams = false
 ): ScopeIndex | null {
   let data: unknown
   try {
@@ -197,6 +204,7 @@ export function parseScopeIndexJson(
   if (json.schemaVersion !== 1 || json.scope !== scopeKey || typeof json.sourceHash !== 'string') {
     return null
   }
+  if ((json.cjkUnigrams === true) !== cjkUnigrams) return null
   if (json.docs === null || typeof json.docs !== 'object' || json.postings === null || typeof json.postings !== 'object') {
     return null
   }
@@ -241,7 +249,8 @@ export function parseScopeIndexJson(
     version,
     malformed: [],
     hydrated: false,
-    ...(files.size > 0 ? { files } : {})
+    ...(files.size > 0 ? { files } : {}),
+    ...(cjkUnigrams ? { cjkUnigrams: true } : {})
   }
 }
 

@@ -5,7 +5,7 @@
  * `dl` 是加权后的 token 数，因此长度归一化与存储的词频保持一致。
  */
 import type { MemoryRecord } from '../types.ts'
-import { tokenize } from './tokenize.ts'
+import { tokenize, type TokenizeOptions } from './tokenize.ts'
 
 /** 设计中的 BM25 调参常量。 */
 export const BM25_K1 = 1.2
@@ -33,9 +33,14 @@ export interface Bm25Corpus {
   avgdl: number
 }
 
-function addWeighted(target: Map<string, number>, text: string, weight: number): number {
+function addWeighted(
+  target: Map<string, number>,
+  text: string,
+  weight: number,
+  options: TokenizeOptions
+): number {
   let added = 0
-  for (const token of tokenize(text)) {
+  for (const token of tokenize(text, options)) {
     target.set(token, (target.get(token) ?? 0) + weight)
     added += weight
   }
@@ -43,13 +48,13 @@ function addWeighted(target: Map<string, number>, text: string, weight: number):
 }
 
 /** 为一条记录构建加权的词项表和长度。 */
-export function indexRecord(record: MemoryRecord): Bm25Document {
+export function indexRecord(record: MemoryRecord, options: TokenizeOptions = {}): Bm25Document {
   const terms = new Map<string, number>()
   let length = 0
-  length += addWeighted(terms, record.title, FIELD_WEIGHTS.title)
-  length += addWeighted(terms, record.summary, FIELD_WEIGHTS.summary)
-  length += addWeighted(terms, record.tags.join(' '), FIELD_WEIGHTS.tags)
-  length += addWeighted(terms, record.body, FIELD_WEIGHTS.body)
+  length += addWeighted(terms, record.title, FIELD_WEIGHTS.title, options)
+  length += addWeighted(terms, record.summary, FIELD_WEIGHTS.summary, options)
+  length += addWeighted(terms, record.tags.join(' '), FIELD_WEIGHTS.tags, options)
+  length += addWeighted(terms, record.body, FIELD_WEIGHTS.body, options)
   return { terms, length }
 }
 

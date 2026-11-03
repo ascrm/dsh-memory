@@ -6,6 +6,12 @@
  */
 const STOPWORDS = new Set(['the', 'a', 'an', 'is', 'of', 'to', 'and', 'or'])
 
+/** 分词选项。`cjkUnigrams` 默认关闭，避免为单字查询放大索引。 */
+export interface TokenizeOptions {
+  keepStopwords?: boolean
+  cjkUnigrams?: boolean
+}
+
 /** 轻量英文词干：只处理常见复数/进行时/过去式，避免引入完整词干库。 */
 function stemLatin(word: string): string {
   if (word.length <= 3 || !/^[a-z]+$/.test(word)) return word
@@ -19,7 +25,7 @@ function stemLatin(word: string): string {
 }
 
 /** 把文本切分为小写拉丁词干和 CJK 单字/二元组。 */
-export function tokenize(text: string, options: { keepStopwords?: boolean } = {}): string[] {
+export function tokenize(text: string, options: TokenizeOptions = {}): string[] {
   const lower = text.toLowerCase()
   const parts = lower.split(/[^a-z0-9\u4e00-\u9fff]+/).filter(Boolean)
   const out: string[] = []
@@ -28,7 +34,9 @@ export function tokenize(text: string, options: { keepStopwords?: boolean } = {}
       if (options.keepStopwords === true || !STOPWORDS.has(part)) out.push(stemLatin(part))
     } else {
       const chars = [...part]
-      for (const char of chars) out.push(char)
+      if (options.cjkUnigrams === true) {
+        for (const char of chars) out.push(char)
+      }
       for (let i = 0; i + 1 < chars.length; i += 1) out.push(chars[i]! + chars[i + 1]!)
     }
   }

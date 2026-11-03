@@ -11,12 +11,16 @@ describe('tokenize', () => {
     expect(tokenize('the build is part of the app', { keepStopwords: true })).toContain('the')
   })
 
-  it('produces CJK unigrams and bigrams', () => {
-    expect(tokenize('记忆插件')).toEqual(['记', '忆', '插', '件', '记忆', '忆插', '插件'])
+  it('produces CJK bigrams by default', () => {
+    expect(tokenize('记忆插件')).toEqual(['记忆', '忆插', '插件'])
+  })
+
+  it('optionally indexes CJK unigrams', () => {
+    expect(tokenize('记忆插件', { cjkUnigrams: true })).toEqual(['记', '忆', '插', '件', '记忆', '忆插', '插件'])
   })
 
   it('handles mixed Chinese and English', () => {
-    expect(tokenize('使用 pnpm 管理')).toEqual(['使', '用', '使用', 'pnpm', '管', '理', '管理'])
+    expect(tokenize('使用 pnpm 管理')).toEqual(['使用', 'pnpm', '管理'])
   })
 
   it('applies light latin stemming', () => {
