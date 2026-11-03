@@ -1076,7 +1076,7 @@ recency = exp(-daysSince(lastUsedAt ?? updatedAt) / halfLifeDays)
 
 ```json
 {
-  "name": "dsh-memory",
+  "name": "@ascrm88/dsh-memory",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -1127,7 +1127,7 @@ recency = exp(-daysSince(lastUsedAt ?? updatedAt) / halfLifeDays)
 ```yaml
 - insert:
     - id: dsh-memory
-      name: dsh-memory
+      name: '@ascrm88/dsh-memory'
 ```
 
 ### 14.3 `Config`

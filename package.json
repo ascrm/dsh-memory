@@ -1,11 +1,29 @@
 {
-  "name": "dsh-memory",
+  "name": "@ascrm88/dsh-memory",
   "version": "0.1.0",
   "description": "Local-first, file-based two-tier memory plugin for DeepSeek Harness: auditable Markdown memories with verified trust, core injection and on-demand search",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "homepage": "https://github.com/ascrm/dsh-memory#readme",
+  "bugs": {
+    "url": "https://github.com/ascrm/dsh-memory/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "agent-memory",
+    "memory",
+    "local-first",
+    "markdown",
+    "sqlite",
+    "fts5"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "dsh-memory": "lib/cli.js"
   },

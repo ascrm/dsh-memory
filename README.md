@@ -104,14 +104,14 @@ dsh plugin add /path/to/dsh-memory
 发布到 npm 后也可以直接安装：
 
 ```bash
-dsh plugin add dsh-memory
+dsh plugin add @ascrm88/dsh-memory
 ```
 
 插件入口为 `lib/index.js`，包内附带 `cordis.patch.yml`。典型的 profile 配置：
 
 ```yaml
 - id: dsh-memory
-  name: dsh-memory
+  name: '@ascrm88/dsh-memory'
   config:
     memoryDir: ~/.dsh/memory
     enableRecall: true
