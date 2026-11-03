@@ -105,7 +105,7 @@ describe('filesystem safety', () => {
     try {
       await symlink(outside, join(dir, '01JABCDEFGHJKMNPQRSTVWXYZ3.md'))
     } catch {
-      return // Windows without symlink privilege.
+      return // Windows 上没有符号链接权限。
     }
     const index = await store.getScopeIndex(userScope)
     expect(index.docs.size).toBe(0)

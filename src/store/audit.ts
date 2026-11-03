@@ -1,19 +1,18 @@
 /**
- * Append-only JSONL audit log.
+ * 追加写入的 JSONL 审计日志。
  *
- * Auditing is a side effect: a failed append is reported through the optional
- * warning callback and never blocks a memory operation. Events never carry
- * memory bodies, query text or secrets.
+ * 审计只是一种副作用：追加失败会通过可选的警告回调上报，并且绝不阻塞记忆操作。
+ * 事件永远不携带记忆正文、查询文本或密钥。
  */
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { auditFile } from './paths.ts'
 
-/** Maximum size before the log is rotated. */
+/** 日志轮转前的最大大小。 */
 export const AUDIT_MAX_BYTES = 5 * 1024 * 1024
 
-/** One audit event. */
+/** 一条审计事件。 */
 export interface AuditEvent {
   ts: number
   event:
@@ -23,6 +22,7 @@ export interface AuditEvent {
     | 'dispute'
     | 'restore'
     | 'pin'
+    | 'resolve'
     | 'supersede'
     | 'inject'
     | 'search'
@@ -42,7 +42,7 @@ export interface AuditEvent {
   details?: Record<string, string | number | boolean>
 }
 
-/** Buffered, serialized audit writer. */
+/** 带缓冲、串行写入的审计写入器。 */
 export class MemoryAudit {
   private readonly root: string
   private readonly warn: (message: string) => void
@@ -53,7 +53,7 @@ export class MemoryAudit {
     this.warn = warn ?? (() => {})
   }
 
-  /** Append one event; resolves once the line is written (or failed). */
+  /** 追加一条事件；该行写入完成（或失败）后 resolve。 */
   append(event: AuditEvent): Promise<void> {
     const line = `${JSON.stringify({ ...event, ts: event.ts ?? Date.now() })}\n`
     this.chain = this.chain.then(() => this.writeLine(line)).catch((error: unknown) => {
@@ -62,12 +62,12 @@ export class MemoryAudit {
     return this.chain
   }
 
-  /** Remaining queued appends. */
+  /** 仍在排队的追加操作。 */
   flush(): Promise<void> {
     return this.chain
   }
 
-  /** Read all parseable events (bad lines are skipped). */
+  /** 读取所有可解析的事件（坏行会被跳过）。 */
   async read(): Promise<AuditEvent[]> {
     let raw: string
     try {
@@ -82,7 +82,7 @@ export class MemoryAudit {
         const parsed = JSON.parse(line) as AuditEvent
         if (typeof parsed.ts === 'number' && typeof parsed.event === 'string') out.push(parsed)
       } catch {
-        // Tolerate a torn final line or a hand edit.
+        // 容忍末尾被截断的行，或因手工编辑而损坏的行。
       }
     }
     return out
@@ -125,7 +125,7 @@ export class MemoryAudit {
   }
 }
 
-/** Convenience: audit file path for a root. */
+/** 便捷函数：某个根目录对应的审计文件路径。 */
 export function auditPathFor(root: string): string {
   return join(root, 'audit.jsonl')
 }

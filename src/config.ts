@@ -1,20 +1,25 @@
 /**
- * Plugin configuration and path resolution.
+ * 插件配置与路径解析。
  *
- * Defaults live in the schemastery schema so the host can render them; a
- * profile patch replaces the whole table.
+ * 默认值放在 schemastery schema 里，以便宿主渲染；profile patch 会替换整张表。
  */
 import { resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { expandHomePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { MemoryConfig } from './types.ts'
 
-/** Schemastery schema exported as the plugin's `Config`. */
+/** 作为插件 `Config` 导出的 schemastery schema。 */
 export const Config: z<MemoryConfig> = z.object({  memoryDir: z.string().description('Memory root; defaults to $DSH_HOME/memory.'),
   maxCoreBytes: z.number().default(1024).description('Byte budget for the injected core layer.'),
   maxCoreItems: z.number().default(8).description('Maximum number of memories in the core layer.'),
   maxSearchResults: z.number().default(8).description('Default number of search results.'),
   maxBodyBytes: z.number().default(8192).description('Maximum memory body size in bytes.'),
+  enableRecall: z.boolean().default(true).description('Inject memories relevant to the current user message.'),
+  recallMaxBytes: z.number().default(1024).description('Byte budget for the per-turn recall section.'),
+  recallMaxItems: z.number().default(5).description('Maximum memories in the per-turn recall section.'),
+  recallIncludeCandidates: z.boolean().default(false).description('Include unverified candidates in recall.'),
+  recallTimeoutMs: z.number().default(500).description('Give up recall for this step after this many milliseconds.'),
+  indexBackend: z.string().default('json').description("Derived index backend: 'json' or 'sqlite' (FTS5)."),
   enableUserScope: z.boolean().default(true).description('Enable user-global memories.'),
   enableAutoCapture: z.boolean().default(false).description('Extract candidate memories when an agent is disposed.'),
   autoCaptureMaxTokens: z.number().default(2048).description('Output token cap for auto capture.'),
@@ -27,7 +32,7 @@ export const Config: z<MemoryConfig> = z.object({  memoryDir: z.string().descrip
   redactPhoneAndId: z.boolean().default(false).description('Also redact phone numbers and Chinese ID numbers.')
 }) as unknown as z<MemoryConfig>
 
-/** Resolve the memory root to an absolute path. */
+/** 把记忆根目录解析为绝对路径。 */
 export function resolveMemoryDir(config: Pick<MemoryConfig, 'memoryDir'>): string {
   const configured = config.memoryDir
   if (configured !== undefined && configured.trim().length > 0) {
@@ -36,7 +41,7 @@ export function resolveMemoryDir(config: Pick<MemoryConfig, 'memoryDir'>): strin
   return resolve(resolveDshHome(), 'memory')
 }
 
-/** Normalize a partially applied config with all defaults materialized. */
+/** 规范化部分应用的配置，并把所有默认值补齐。 */
 export function normalizeConfig(config: Partial<MemoryConfig>): MemoryConfig {
   return {
     memoryDir: config.memoryDir,
@@ -44,6 +49,12 @@ export function normalizeConfig(config: Partial<MemoryConfig>): MemoryConfig {
     maxCoreItems: positive(config.maxCoreItems, 8),
     maxSearchResults: positive(config.maxSearchResults, 8),
     maxBodyBytes: positive(config.maxBodyBytes, 8192),
+    enableRecall: config.enableRecall ?? true,
+    recallMaxBytes: positive(config.recallMaxBytes, 1024),
+    recallMaxItems: positive(config.recallMaxItems, 5),
+    recallIncludeCandidates: config.recallIncludeCandidates ?? false,
+    recallTimeoutMs: positive(config.recallTimeoutMs, 500),
+    indexBackend: config.indexBackend === 'sqlite' ? 'sqlite' : 'json',
     enableUserScope: config.enableUserScope ?? true,
     enableAutoCapture: config.enableAutoCapture ?? false,
     autoCaptureMaxTokens: positive(config.autoCaptureMaxTokens, 2048),

@@ -1,9 +1,8 @@
 /**
- * Schema-version migration hooks.
+ * schema 版本迁移钩子。
  *
- * Files newer than this plugin are rejected (read-only note in the panel);
- * older files are backed up under `memory.bak/` before being rewritten. Current
- * schema is 1, so normal operation is a no-op.
+ * 比本插件更新的文件会被拒绝（面板中显示只读提示）；较旧的文件会先备份到
+ * `memory.bak/`，然后再重写。当前 schema 为 1，因此正常运行时这里是空操作。
  */
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
@@ -11,14 +10,14 @@ import { SCHEMA_VERSION, type MemoryScope } from './types.ts'
 import type { MemoryStore } from './store/store.ts'
 import { backupDir, memoriesDir } from './store/paths.ts'
 
-/** Reject data written by a newer plugin. */
+/** 拒绝由更新版本插件写入的数据。 */
 export function assertReadableSchema(version: number): void {
   if (version > SCHEMA_VERSION) {
     throw new Error(`SCHEMA_TOO_NEW: memory schema ${version} is newer than supported ${SCHEMA_VERSION}`)
   }
 }
 
-/** Copy every memory file of a scope into `memory.bak/<timestamp>/`. */
+/** 把一个作用域的所有记忆文件复制到 `memory.bak/<timestamp>/`。 */
 export async function backupScope(store: MemoryStore, scope: MemoryScope): Promise<string | undefined> {
   const source = memoriesDir(store.root, scope)
   let entries
@@ -38,13 +37,13 @@ export async function backupScope(store: MemoryStore, scope: MemoryScope): Promi
   return copied > 0 ? target : undefined
 }
 
-/** Run startup migrations for a scope (currently a no-op for version 1). */
+/** 对一个作用域执行启动迁移（版本 1 目前为空操作）。 */
 export async function migrateScope(store: MemoryStore, scope: MemoryScope): Promise<{ migrated: number; backup?: string }> {
   const { records } = await store.recordsOf(scope)
   const stale = records.filter((record) => record.schemaVersion < SCHEMA_VERSION)
   if (stale.length === 0) return { migrated: 0 }
-  // Version 1 is the only released schema. Field-level migrations for a future
-  // schema version are added here, after the backup is on disk.
+  // 版本 1 是唯一发布过的 schema。未来 schema 版本的字段级迁移在这里添加，
+  // 此时备份已经落盘。
   const backup = await backupScope(store, scope)
   await store.audit.append({
     ts: Date.now(),

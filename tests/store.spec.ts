@@ -194,6 +194,54 @@ describe('trust lifecycle', () => {
     expect(old?.record.supersededBy).toBe(second.record.id)
     expect(next?.record.supersedes).toBe(first.record.id)
   })
+
+  it('marks conflicts on both sides and resolves keep/merge/both', async () => {
+    const { store } = await setup()
+    const first = await store.write({
+      slug: 'pnpm-first',
+      kind: 'preference',
+      title: 'PNPM first',
+      summary: 'Use pnpm for package management',
+      body: 'body',
+      scope: userScope
+    })
+    const second = await store.write({
+      slug: 'pnpm-second',
+      kind: 'preference',
+      title: 'PNPM second',
+      summary: 'Use pnpm for package management',
+      body: 'body',
+      scope: userScope
+    })
+    const firstLoc = await store.locate(first.record.id, { scope: userScope })
+    const secondLoc = await store.locate(second.record.id, { scope: userScope })
+    expect(firstLoc?.record.conflictOf).toContain(second.record.id)
+    expect(secondLoc?.record.conflictOf).toContain(first.record.id)
+
+    await store.resolveConflict(first.record.id, second.record.id, 'both')
+    expect((await store.locate(first.record.id, { scope: userScope }))?.record.conflictOf).toBeUndefined()
+    expect((await store.locate(second.record.id, { scope: userScope }))?.record.conflictOf).toBeUndefined()
+    expect((await store.locate(second.record.id, { scope: userScope }))?.record.trust).toBe('candidate')
+
+    const third = await store.write({
+      slug: 'pnpm-third',
+      kind: 'preference',
+      title: 'PNPM third',
+      summary: 'Use pnpm for package management',
+      body: 'body',
+      scope: userScope
+    })
+    const merged = await store.resolveConflict(first.record.id, third.record.id, 'merge', {
+      summary: 'Merged pnpm guidance',
+      tags: ['merged']
+    })
+    expect(merged.keep.summary).toBe('Merged pnpm guidance')
+    expect(merged.keep.tags).toEqual(['merged'])
+    expect(merged.other.trust).toBe('superseded')
+    expect(merged.other.supersededBy).toBe(first.record.id)
+    expect(merged.keep.supersedes).toBe(third.record.id)
+    expect((await store.locate(third.record.id, { scope: userScope }))?.record.conflictOf).toBeUndefined()
+  })
 })
 
 describe('forget', () => {
@@ -253,6 +301,23 @@ describe('search and core', () => {
     const { store } = await setup()
     await writePreference(store)
     expect(await store.search({ query: '   ', scope: 'all', projectScope })).toEqual([])
+  })
+
+  it('fills the head with metadata-ranked memories when keyword hits are scarce', async () => {
+    const { store } = await setup()
+    const keyword = await writePreference(store)
+    const metadataOnly = await store.write({
+      slug: 'dashboard',
+      kind: 'artifact',
+      title: 'Dashboard',
+      summary: 'Monitoring dashboard URL',
+      body: 'https://example.com/dashboard',
+      scope: userScope,
+      importance: 10
+    })
+    const hits = await store.search({ query: 'pnpm', scope: 'user', limit: 8 })
+    expect(hits.some((hit) => hit.id === keyword.record.id)).toBe(true)
+    expect(hits.some((hit) => hit.id === metadataOnly.record.id)).toBe(true)
   })
 
   it('only injects verified records and honors the budget', async () => {
@@ -387,15 +452,17 @@ describe('project metadata and export', () => {
     expect(agents.content).not.toContain('Not verified')
   })
 
-  it('imports records as candidates and skips duplicate slugs', async () => {
+  it('imports records as candidates, preserves free ids and skips duplicate slugs', async () => {
     const { store } = await setup()
+    const importedId = '01JABCDEFGHJKMNPQRSTVWXYZ7'
     const result = await store.importRecords(userScope, [
-      { slug: 'imported', kind: 'preference', title: 'Imported', summary: 'Imported summary', body: 'b' },
+      { id: importedId, slug: 'imported', kind: 'preference', title: 'Imported', summary: 'Imported summary', body: 'b' },
       { slug: 'imported', kind: 'preference', title: 'Imported again', summary: 'Duplicate', body: 'b' }
     ])
-    expect(result.imported).toHaveLength(1)
+    expect(result.imported).toEqual([importedId])
     expect(result.skipped).toHaveLength(1)
     const located = await store.locate(result.imported[0]!, { scope: userScope })
+    expect(located?.record.id).toBe(importedId)
     expect(located?.record.trust).toBe('candidate')
   })
 })

@@ -1,18 +1,17 @@
 /**
- * BM25 over weighted fields.
+ * 加权字段上的 BM25。
  *
- * Field weights are applied to term frequencies at index build time:
- * title ×3, summary ×2, tags ×2, body ×1. `dl` is the weighted token count so
- * the length normalization matches the stored frequencies.
+ * 字段权重在构建索引时作用到词频上：title ×3、summary ×2、tags ×2、body ×1。
+ * `dl` 是加权后的 token 数，因此长度归一化与存储的词频保持一致。
  */
 import type { MemoryRecord } from '../types.ts'
 import { tokenize } from './tokenize.ts'
 
-/** BM25 tuning constants from the design. */
+/** 设计中的 BM25 调参常量。 */
 export const BM25_K1 = 1.2
 export const BM25_B = 0.75
 
-/** Field weights. */
+/** 字段权重。 */
 export const FIELD_WEIGHTS = {
   title: 3,
   summary: 2,
@@ -20,13 +19,13 @@ export const FIELD_WEIGHTS = {
   body: 1
 } as const
 
-/** One document's weighted terms and length. */
+/** 单个文档的加权词项与长度。 */
 export interface Bm25Document {
   terms: Map<string, number>
   length: number
 }
 
-/** Postings plus corpus statistics. */
+/** postings 与语料库统计信息。 */
 export interface Bm25Corpus {
   docs: Map<string, Bm25Document>
   postings: Map<string, Map<string, number>>
@@ -43,7 +42,7 @@ function addWeighted(target: Map<string, number>, text: string, weight: number):
   return added
 }
 
-/** Build the weighted term map and length for one record. */
+/** 为一条记录构建加权的词项表和长度。 */
 export function indexRecord(record: MemoryRecord): Bm25Document {
   const terms = new Map<string, number>()
   let length = 0
@@ -54,7 +53,7 @@ export function indexRecord(record: MemoryRecord): Bm25Document {
   return { terms, length }
 }
 
-/** Build a full corpus from records. */
+/** 从记录构建完整的语料库。 */
 export function buildBm25Corpus(records: readonly MemoryRecord[]): Bm25Corpus {
   const docs = new Map<string, Bm25Document>()
   const postings = new Map<string, Map<string, number>>()
@@ -81,12 +80,12 @@ export function buildBm25Corpus(records: readonly MemoryRecord[]): Bm25Corpus {
   }
 }
 
-/** Whether a token is indexed. */
+/** 某个 token 是否已被索引。 */
 export function hasTerm(corpus: Bm25Corpus, term: string): boolean {
   return corpus.postings.has(term)
 }
 
-/** Compute raw BM25 scores for one query. */
+/** 为一次查询计算原始 BM25 分数。 */
 export function bm25Scores(query: string, corpus: Bm25Corpus): Map<string, number> {
   const scores = new Map<string, number>()
   if (corpus.docCount === 0 || corpus.avgdl <= 0) return scores
@@ -109,7 +108,7 @@ export function bm25Scores(query: string, corpus: Bm25Corpus): Map<string, numbe
   return scores
 }
 
-/** Normalize BM25 scores into [0, 1] by dividing by the maximum. */
+/** 通过除以最大值把 BM25 分数归一化到 [0, 1]。 */
 export function normalizeBm25(scores: Map<string, number>): Map<string, number> {
   let max = 0
   for (const score of scores.values()) if (score > max) max = score

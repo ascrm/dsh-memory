@@ -1,15 +1,14 @@
 /**
- * Stable identifiers and link syntax.
+ * 稳定的标识符与链接语法。
  *
- * Records use ULIDs so a memory keeps its identity when its slug or wording
- * changes. Links accept either the ULID (with or without the `mem_` display
- * prefix) or a slug resolved within the same scope.
+ * 记录使用 ULID，这样即使 slug 或措辞发生变化，记忆仍能保持同一身份。链接可以是
+ * ULID（带或不带 `mem_` 显示前缀），也可以是在同一作用域内解析的 slug。
  */
 import { randomBytes } from 'node:crypto'
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 
-/** Generate a monotonic-enough ULID (26 characters, Crockford base32). */
+/** 生成一个单调性足够好的 ULID（26 个字符，Crockford base32）。 */
 export function generateUlid(now: number = Date.now()): string {
   let time = Math.floor(now)
   let out = ''
@@ -24,29 +23,29 @@ export function generateUlid(now: number = Date.now()): string {
   return out
 }
 
-/** Whether a string is a canonical ULID-shaped id. */
+/** 判断字符串是否为规范形式的 ULID id。 */
 export function isUlid(value: string): boolean {
   return /^[0-9A-HJKMNP-TV-Z]{26}$/.test(value)
 }
 
-/** Strip the `mem_` display prefix from an id. */
+/** 去掉 id 上的 `mem_` 显示前缀。 */
 export function bareId(value: string): string {
   return value.startsWith('mem_') ? value.slice(4) : value
 }
 
-/** Render an id for model-facing text. */
+/** 把 id 渲染成面向模型的文本。 */
 export function displayId(id: string): string {
   return `mem_${id}`
 }
 
-/** A resolved `[[link]]` inside a memory body. */
+/** 记忆正文中解析出来的一处 `[[link]]`。 */
 export interface MemoryLinkRef {
   raw: string
   id?: string
   slug?: string
 }
 
-/** Extract `[[...]]` references from Markdown, without duplicates. */
+/** 从 Markdown 中提取 `[[...]]` 引用，并去重。 */
 export function extractLinks(body: string): MemoryLinkRef[] {
   const out: MemoryLinkRef[] = []
   const seen = new Set<string>()

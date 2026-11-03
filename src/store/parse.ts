@@ -1,9 +1,8 @@
 /**
- * Markdown + YAML frontmatter parsing and serialization.
+ * Markdown + YAML frontmatter 的解析与序列化。
  *
- * Unknown frontmatter keys are preserved. A malformed file is reported and
- * skipped, never deleted. The directory a file lives in decides its scope; a
- * conflicting `scope` field is reported and ignored.
+ * 未知的 frontmatter 键会被保留。格式错误的文件会被报告并跳过，绝不会被删除。文件
+ * 所在目录决定其作用域；与之冲突的 `scope` 字段会被报告并忽略。
  */
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { shortHash } from './sanitize.ts'
@@ -22,7 +21,7 @@ import {
 } from '../types.ts'
 import { normalizeSlug, normalizeSource, normalizeTags, singleLine } from './sanitize.ts'
 
-/** All frontmatter keys owned by this plugin. */
+/** 本插件拥有的全部 frontmatter 键。 */
 const KNOWN_FIELDS = new Set([
   'schemaVersion',
   'id',
@@ -51,19 +50,19 @@ const KNOWN_FIELDS = new Set([
   'revision'
 ])
 
-/** Parsed file plus metadata needed to repair it. */
+/** 解析结果，以及修复它所需的元数据。 */
 export interface ParsedMemoryFile {
   record: MemoryRecord
   rawFrontmatter: Record<string, unknown>
   warnings: string[]
   needsWrite: boolean
-  /** True when the id was synthesized because the file had none. */
+  /** 当文件本身没有 id 而由系统合成时，该字段为 true。 */
   generatedId: boolean
 }
 
 const FRONTMATTER = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/
 
-/** Split a Markdown file into raw frontmatter YAML and body. */
+/** 把 Markdown 文件拆分为原始 frontmatter YAML 和正文。 */
 export function splitFrontmatter(text: string): { yaml: string; body: string } {
   const normalized = text.replace(/^\uFEFF/, '')
   const match = FRONTMATTER.exec(normalized)
@@ -138,7 +137,7 @@ function asStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
 }
 
-/** Parse one memory file. `scope` is authoritative (from its directory). */
+/** 解析一个记忆文件。`scope` 是权威来源（取自其所在目录）。 */
 export function parseMemoryFile(text: string, scope: MemoryScope, now: number = Date.now()): ParsedMemoryFile {
   const { yaml, body } = splitFrontmatter(text)
   let data: unknown
@@ -251,12 +250,12 @@ export function parseMemoryFile(text: string, scope: MemoryScope, now: number = 
   return { record, rawFrontmatter, warnings, needsWrite, generatedId }
 }
 
-/** Date to ISO string (epoch ms). */
+/** 把日期转为 ISO 字符串（epoch 毫秒）。 */
 function iso(epoch: number | undefined): string | null {
   return epoch === undefined ? null : new Date(epoch).toISOString()
 }
 
-/** Serialize one record back to Markdown with a stable field order. */
+/** 把一条记录序列化回 Markdown，字段顺序保持稳定。 */
 export function serializeMemoryFile(record: MemoryRecord): string {
   const data: Record<string, unknown> = {
     schemaVersion: SCHEMA_VERSION,
@@ -294,7 +293,7 @@ export function serializeMemoryFile(record: MemoryRecord): string {
   return `---\n${yaml}---\n\n${record.body}\n`
 }
 
-/** Compute/refresh the evidence fingerprint for a quote. */
+/** 计算/刷新某段引文的 evidence 指纹。 */
 export function evidenceFor(quote: string): MemoryEvidence {
   return { quote, hash: shortHash(quote, 16) }
 }

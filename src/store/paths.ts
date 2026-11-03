@@ -1,17 +1,16 @@
 /**
- * Project identity and filesystem layout.
+ * 项目身份与文件系统布局。
  *
- * A project is identified by its git remote plus the path of the working
- * directory relative to the repository root. That keeps memories attached to a
- * repository when it is cloned elsewhere, and gives monorepo packages their own
- * scope. Directories without git fall back to a hash of their absolute path.
+ * 项目由 git remote 加上工作目录相对仓库根目录的路径来标识。这样仓库被克隆到别处时，
+ * 记忆仍会附着在同一个仓库上，monorepo 中的各包也能拥有自己的作用域。没有 git 的目录
+ * 退化为对其绝对路径取哈希。
  */
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { MemoryScope } from '../types.ts'
 
-/** Resolved project identity used for `project.json` and the scope key. */
+/** 解析后的项目身份，用于 `project.json` 和 scope key。 */
 export interface ProjectIdentity {
   key: string
   label: string
@@ -25,7 +24,7 @@ function sha12(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 12)
 }
 
-/** Canonical absolute path; symlinks resolved when the path exists. */
+/** 规范化的绝对路径；路径存在时会解析符号链接。 */
 export function canonicalPath(input: string): string {
   const absolute = resolve(input)
   try {
@@ -39,7 +38,7 @@ export function canonicalPath(input: string): string {
   }
 }
 
-/** Normalize a path for hashing: forward slashes, drive letter case folded. */
+/** 规范化用于哈希的路径：使用正斜杠，盘符字母统一为大写。 */
 export function normalizePathForHash(input: string): string {
   let out = canonicalPath(input).replaceAll('\\', '/')
   if (process.platform === 'win32') {
@@ -49,7 +48,7 @@ export function normalizePathForHash(input: string): string {
   return out.length === 0 ? '/' : out
 }
 
-/** Convert a git URL into `host/owner/repo`, dropping scheme, credentials and `.git`. */
+/** 把 git URL 转换为 `host/owner/repo`，去掉 scheme、凭据和 `.git`。 */
 export function normalizeRemote(raw: string): string {
   let value = raw.trim()
   value = value.replace(/^git\+/, '')
@@ -59,10 +58,10 @@ export function normalizeRemote(raw: string): string {
       const path = url.pathname.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '')
       return `${url.hostname.toLowerCase()}/${path}`
     } catch {
-      // Fall through to the scp-like parser.
+      // 交给下面的 scp 风格解析器处理。
     }
   }
-  // scp-like form: git@github.com:acme/repo.git (never a Windows drive path).
+  // scp 风格形式：git@github.com:acme/repo.git（绝不是 Windows 盘符路径）。
   const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(value)
   if (scp !== null && !/^[a-zA-Z]:[\\/]/.test(value)) {
     const host = scp[1]!.toLowerCase()
@@ -76,7 +75,7 @@ export function normalizeRemote(raw: string): string {
 }
 
 interface GitLocation {
-  /** Directory containing the `.git` entry (the worktree root). */
+  /** 包含 `.git` 条目的目录（即 worktree 根目录）。 */
   root: string
   gitdir: string
   commonDir: string
@@ -98,7 +97,7 @@ function isFile(path: string): boolean {
   }
 }
 
-/** Walk upward from `cwd` looking for `.git` (directory or worktree file). */
+/** 从 `cwd` 逐级向上查找 `.git`（目录或 worktree 文件）。 */
 export function findGitRoot(cwd: string): GitLocation | null {
   let current = cwd
   for (;;) {
@@ -129,7 +128,7 @@ export function findGitRoot(cwd: string): GitLocation | null {
         }
       }
     } catch {
-      // No `.git` here; keep walking.
+      // 这里没有 `.git`，继续向上查找。
     }
     const parent = dirname(current)
     if (parent === current) return null
@@ -137,7 +136,7 @@ export function findGitRoot(cwd: string): GitLocation | null {
   }
 }
 
-/** Pick the origin remote, else the first remote, from a git config file. */
+/** 从 git config 文件中取出 origin remote，没有则取第一个 remote。 */
 export function readGitRemote(location: GitLocation): string | undefined {
   const candidates = [join(location.commonDir, 'config'), join(location.gitdir, 'config')]
   for (const file of candidates) {
@@ -172,7 +171,7 @@ export function readGitRemote(location: GitLocation): string | undefined {
   return undefined
 }
 
-/** Resolve the identity of a working directory. */
+/** 解析某个工作目录的身份。 */
 export function projectIdentity(cwd: string, mode: 'git' | 'path' = 'git'): ProjectIdentity {
   const real = canonicalPath(cwd)
   const cacheKey = `${mode}\0${real}`
@@ -217,17 +216,17 @@ export function projectIdentity(cwd: string, mode: 'git' | 'path' = 'git'): Proj
   return identity
 }
 
-/** Project scope for a working directory. */
+/** 某个工作目录对应的项目作用域。 */
 export function projectScopeFor(cwd: string, mode: 'git' | 'path' = 'git'): MemoryScope {
   return { type: 'project', key: projectIdentity(cwd, mode).key }
 }
 
-/** Stable scope key: `user` or `project:<key>`. */
+/** 稳定的 scope key：`user` 或 `project:<key>`。 */
 export function scopeKey(scope: MemoryScope): string {
   return scope.type === 'user' ? 'user' : `project:${scope.key}`
 }
 
-/** Parse a serialized scope key. */
+/** 解析序列化后的 scope key。 */
 export function parseScopeKey(value: string): MemoryScope {
   if (value === 'user') return { type: 'user' }
   if (value.startsWith('project:')) {
@@ -238,37 +237,37 @@ export function parseScopeKey(value: string): MemoryScope {
   throw new Error(`invalid scope key: ${value}`)
 }
 
-/** Root directory for a scope. */
+/** 某个作用域的根目录。 */
 export function scopeDir(root: string, scope: MemoryScope): string {
   return scope.type === 'user' ? join(root, 'user') : join(root, 'projects', scope.key)
 }
 
-/** Directory holding one memory per Markdown file. */
+/** 每个 Markdown 文件存放一条记忆的目录。 */
 export function memoriesDir(root: string, scope: MemoryScope): string {
   return join(scopeDir(root, scope), 'memories')
 }
 
-/** Audit log path. */
+/** 审计日志路径。 */
 export function auditFile(root: string): string {
   return join(root, 'audit.jsonl')
 }
 
-/** Temporary directory for atomic writes and cleanups. */
+/** 用于原子写入和清理的临时目录。 */
 export function tmpDir(root: string): string {
   return join(root, 'tmp')
 }
 
-/** Directory used for pre-migration backups. */
+/** 用于迁移前备份的目录。 */
 export function backupDir(root: string): string {
   return join(root, 'memory.bak')
 }
 
-/** Project metadata file. */
+/** 项目元数据文件。 */
 export function projectJsonFile(root: string, key: string): string {
   return join(root, 'projects', key, 'project.json')
 }
 
-/** List project keys present on disk. */
+/** 列出磁盘上存在的项目键。 */
 export function listProjectKeys(root: string): string[] {
   const dir = join(root, 'projects')
   if (!isDirectory(dir)) return []
@@ -279,7 +278,7 @@ export function listProjectKeys(root: string): string[] {
   }
 }
 
-/** Whether a file exists and is a regular file (symlinks rejected). */
+/** 路径是否存在且为普通文件（拒绝符号链接）。 */
 export function isRegularFile(path: string): boolean {
   try {
     return lstatSync(path).isFile()
@@ -288,7 +287,7 @@ export function isRegularFile(path: string): boolean {
   }
 }
 
-/** Whether a path is a directory (symlinks rejected). */
+/** 路径是否为目录（拒绝符号链接）。 */
 export function isRealDirectory(path: string): boolean {
   try {
     return lstatSync(path).isDirectory()
@@ -297,7 +296,7 @@ export function isRealDirectory(path: string): boolean {
   }
 }
 
-/** Ensure a resolved path stays under the memory root. */
+/** 确保解析后的路径仍位于记忆根目录之下。 */
 export function assertInside(root: string, candidate: string): string {
   const rootResolved = resolve(root)
   const target = resolve(candidate)
@@ -308,12 +307,12 @@ export function assertInside(root: string, candidate: string): string {
   return target
 }
 
-/** Convenience: project metadata path for a cwd. */
+/** 便捷函数：某个 cwd 对应的项目元数据路径。 */
 export function projectJsonForCwd(root: string, cwd: string, mode: 'git' | 'path'): string {
   return projectJsonFile(root, projectIdentity(cwd, mode).key)
 }
 
-/** Whether a path exists (used for optional project metadata). */
+/** 路径是否存在（用于可选的 project 元数据）。 */
 export function pathExists(path: string): boolean {
   return existsSync(path)
 }

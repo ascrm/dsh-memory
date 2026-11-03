@@ -1,16 +1,17 @@
 /**
- * dsh-memory plugin entry.
+ * dsh-memory 插件入口。
  *
- * A local-first, file-based memory plugin for DeepSeek Harness: Markdown is the
- * source of truth, a derived BM25 index is the retrieval cache, and a two-tier
- * design keeps the system prompt under a hard byte budget while exposing the
- * recall layer through tools.
+ * 面向 DeepSeek Harness 的本地优先、基于文件的记忆插件：Markdown 是唯一事实来源，
+ * 派生的 BM25 索引是检索缓存；两层设计让系统提示词始终处在硬性字节预算之内，
+ * 同时通过工具暴露召回层。
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-system-prompt'
 import { Config, normalizeConfig, resolveMemoryDir } from './config.ts'
 import type { MemoryConfig } from './types.ts'
 import { MemoryStore } from './store/store.ts'
 import { CoreCache } from './injection/core.ts'
+import { RECALL_SECTION_NAME, RecallService } from './injection/recall.ts'
 import { createInjectionAuditor } from './injection/audit.ts'
 import { registerTools } from './tools.ts'
 import { registerCapture } from './capture.ts'
@@ -18,12 +19,26 @@ import { registerMemoryApi } from './api.ts'
 import { scopeKey } from './store/paths.ts'
 
 export { Config }
-export type { MemoryConfig } from './types.ts'
+export { normalizeConfig, resolveMemoryDir } from './config.ts'
+export { MemoryStore } from './store/store.ts'
+export type { MemoryStoreOptions } from './store/store.ts'
+export { MemoryError } from './types.ts'
+export { selectCore } from './injection/core.ts'
+export type {
+  MemoryConfig,
+  MemoryKind,
+  MemoryRecord,
+  MemoryScope,
+  MemorySearchHit,
+  MemorySearchOptions,
+  MemoryListOptions,
+  TrustState
+} from './types.ts'
 
-/** Plugin name used by the loader. */
+/** 加载器使用的插件名。 */
 export const name = 'dsh-memory'
 
-/** Services this plugin requires at apply time. */
+/** 本插件在 apply 时需要的服务。 */
 export const inject = ['tools', 'systemPrompt']
 
 interface ConnectionLike {
@@ -37,7 +52,7 @@ interface ConnectionLike {
   }
 }
 
-/** Plugin entry point. */
+/** 插件入口点。 */
 export function apply(ctx: Context, config: MemoryConfig): void {
   const merged = normalizeConfig(config)
   const root = resolveMemoryDir(merged)
@@ -46,7 +61,7 @@ export function apply(ctx: Context, config: MemoryConfig): void {
       try {
         ctx.logger.warn(`[dsh-memory] ${message}`)
       } catch {
-        // Logging must never break a memory operation.
+        // 日志记录绝不能破坏记忆操作。
       }
     }
   })
@@ -55,6 +70,8 @@ export function apply(ctx: Context, config: MemoryConfig): void {
   })
 
   const core = new CoreCache(store, merged, createInjectionAuditor(store))
+  void core.warmUser()
+  const recall = new RecallService(store, merged, core)
   registerTools(ctx, { store, core })
 
   const capture = registerCapture(ctx, store, merged, core)
@@ -63,6 +80,24 @@ export function apply(ctx: Context, config: MemoryConfig): void {
     name: 'memory:core',
     order: 4000,
     text: (context) => core.text(context.agent?.session)
+  })
+
+  ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
+    recall.noteClaim(agent, message, turn)
+  })
+
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const base = await next()
+    if (!merged.enableRecall || context.agent === undefined) return base
+    const pack = await recall.packFor(context.agent)
+    if (pack === null) return base
+    const sections = [...base.sections]
+    const coreAt = sections.findIndex((section) => section.name === 'memory:core')
+    sections.splice(coreAt === -1 ? sections.length : coreAt + 1, 0, {
+      name: RECALL_SECTION_NAME,
+      text: pack.text
+    })
+    return { ...base, sections }
   })
 
   ctx.on('agent/created', ({ agent }) => {
@@ -78,6 +113,7 @@ export function apply(ctx: Context, config: MemoryConfig): void {
 
   ctx.on('session/disposed', (session) => {
     core.drop(session.id)
+    recall.drop(session.id)
   })
 
   ctx.on('tools/pre-execute', async (exec, next) => {
@@ -111,6 +147,8 @@ export function apply(ctx: Context, config: MemoryConfig): void {
         await capture.drain()
         await store.audit.flush()
         core.clear()
+        recall.clear()
+        store.close()
       }
     },
     'dsh-memory teardown'

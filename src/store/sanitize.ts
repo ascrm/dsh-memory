@@ -1,9 +1,8 @@
 /**
- * Input normalization, framing escapes and secret redaction.
+ * 输入规范化、框架标记转义与密钥脱敏。
  *
- * Every string that reaches the system prompt or a tool result passes through
- * these helpers. The disk is not trusted: hand-edited files are re-sanitized
- * on every read.
+ * 每个进入系统提示词或工具结果的字符串都会经过这些辅助函数。磁盘内容不被信任：
+ * 手工编辑过的文件在每次读取时都会重新清洗。
  */
 import { createHash } from 'node:crypto'
 import { MemoryError } from '../types.ts'
@@ -23,7 +22,7 @@ const RESERVED_SLUGS = new Set([
   ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`)
 ])
 
-/** Normalize and validate a slug (kebab-case, at most 64 characters). */
+/** 规范化并校验 slug（kebab-case，最多 64 个字符）。 */
 export function normalizeSlug(input: string): string {
   const slug = input
     .trim()
@@ -40,13 +39,13 @@ export function normalizeSlug(input: string): string {
   return slug
 }
 
-/** Collapse whitespace and truncate to one line. */
+/** 合并空白并截断为单行。 */
 export function singleLine(input: string, max: number): string {
   const one = input.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
   return one.length > max ? one.slice(0, max) : one
 }
 
-/** Escape protocol-shell tags so stored text cannot close `<memory_context>`. */
+/** 转义协议外壳标签，使存储的文本无法闭合 `<memory_context>`。 */
 export function escapeFrame(text: string): string {
   return text.replace(/<\s*\/?\s*memory_context[^>]*>/gi, (match) =>
     match.replace(/[<>]/g, (char) => (char === '<' ? '&lt;' : '&gt;'))
@@ -73,13 +72,13 @@ const SECRET_PATTERNS: SecretPattern[] = [
 ]
 
 const OPTIONAL_PATTERNS: SecretPattern[] = [
-  // Mainland Chinese mobile numbers.
+  // 中国大陆手机号。
   { pattern: /(?<!\d)1[3-9]\d{9}(?!\d)/g, label: 'phone' },
-  // 18-digit mainland ID numbers (last char may be X).
+  // 18 位中国大陆身份证号（末位可能是 X）。
   { pattern: /(?<!\d)\d{17}[\dXx](?!\d)/g, label: 'id-number' }
 ]
 
-/** Replace known credential shapes with `[REDACTED:kind]`. */
+/** 把已知的凭据形态替换为 `[REDACTED:kind]`。 */
 export function redactSecrets(text: string, options: { redactPhoneAndId?: boolean } = {}): string {
   let out = text
   for (const { pattern, label } of SECRET_PATTERNS) {
@@ -93,7 +92,7 @@ export function redactSecrets(text: string, options: { redactPhoneAndId?: boolea
   return out
 }
 
-/** Redact, escape and single-line text destined for injected prompt text. */
+/** 对将要注入提示词的文本做脱敏、转义并压成单行。 */
 export function sanitizeInjectionText(
   text: string,
   max: number,
@@ -102,12 +101,12 @@ export function sanitizeInjectionText(
   return escapeFrame(singleLine(redactSecrets(text, options), max))
 }
 
-/** Sanitize a multi-line body while preserving line structure. */
+/** 清洗多行正文，同时保留行结构。 */
 export function sanitizeBody(text: string, options: { redactPhoneAndId?: boolean } = {}): string {
   return escapeFrame(redactSecrets(text, options))
 }
 
-/** Normalize source provenance fields to short single-line strings. */
+/** 把来源（provenance）字段规范化为简短的单行字符串。 */
 export function normalizeSource(source: object | undefined): Record<string, string> {
   const out: Record<string, string> = {}
   if (source === undefined) return out
@@ -121,7 +120,7 @@ export function normalizeSource(source: object | undefined): Record<string, stri
   return out
 }
 
-/** Normalize a user-provided tag list. */
+/** 规范化用户提供的标签列表。 */
 export function normalizeTags(tags: unknown, max = 20): string[] {
   if (!Array.isArray(tags)) return []
   const seen = new Set<string>()
@@ -148,17 +147,17 @@ const SUSPICIOUS_PATTERNS: RegExp[] = [
   /reveal\s+(your\s+)?(system\s+)?prompt/i
 ]
 
-/** Mark (never block) prompt-injection-looking content. */
+/** 标记（而不是拦截）疑似提示词注入的内容。 */
 export function detectSuspicious(text: string): boolean {
   return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(text))
 }
 
-/** Full SHA-256 hex digest. */
+/** 完整的 SHA-256 十六进制摘要。 */
 export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex')
 }
 
-/** Short hash used for fingerprints. */
+/** 用于指纹的短哈希。 */
 export function shortHash(text: string, length = 16): string {
   return sha256(text).slice(0, length)
 }
@@ -178,7 +177,7 @@ function similarityTokens(text: string): Set<string> {
   return out
 }
 
-/** Jaccard similarity over latin words + CJK bigrams. */
+/** 基于拉丁单词 + CJK 二元组的 Jaccard 相似度。 */
 export function textSimilarity(a: string, b: string): number {
   const left = similarityTokens(a)
   const right = similarityTokens(b)
@@ -190,17 +189,17 @@ export function textSimilarity(a: string, b: string): number {
   return intersection / (left.size + right.size - intersection)
 }
 
-/** Whether two summaries are near-duplicates by the design threshold. */
+/** 按设计中的阈值判断两条摘要是否近似重复。 */
 export function summariesNearDuplicate(a: string, b: string): boolean {
   return textSimilarity(a, b) >= 0.9
 }
 
-/** Whether a summary is a near-duplicate candidate during capture (§12.4). */
+/** 判断某条摘要是否是捕获过程中的近似重复候选（§12.4）。 */
 export function summariesConflict(a: string, b: string): boolean {
   return textSimilarity(a, b) >= 0.7
 }
 
-/** Format bytes as a compact human string. */
+/** 把字节数格式化为紧凑的可读字符串。 */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`

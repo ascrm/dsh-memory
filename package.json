@@ -6,10 +6,17 @@
   "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "bin": {
+    "dsh-memory": "lib/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./cli": {
+      "types": "./lib/cli.d.ts",
+      "default": "./lib/cli.js"
     }
   },
   "files": [
@@ -20,7 +27,10 @@
     "build": "tsdown",
     "prepare": "tsdown",
     "test": "vitest run --pool=threads --no-file-parallelism --testTimeout=20000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench": "pnpm build && node scripts/perf-10k.mjs",
+    "bench:sqlite": "pnpm build && node scripts/perf-10k.mjs sqlite",
+    "bench:json": "pnpm build && node scripts/perf-10k.mjs json"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2",

@@ -65,6 +65,26 @@ describe('plugin integration', () => {
     expect(context.sections[0]?.text({})).toBe('')
   })
 
+  it('serves the user core pack before any agent is created', async () => {
+    const { ctx: context, cwd } = await setup({ trustCandidatesInCore: true })
+    await tool(context, 'memory_write').execute(
+      {
+        slug: 'cold-core',
+        kind: 'preference',
+        title: 'Cold core',
+        summary: 'Cold start should show this user memory',
+        body: 'body',
+        scope: 'user'
+      },
+      execFor(cwd)
+    )
+    const session = { id: 'cold-session', header: { cwd } }
+    await waitFor(() =>
+      (context.sections[0]?.text({ agent: { session } }) ?? '').includes('Cold start should show this user memory')
+    )
+    expect(context.sections[0]?.text({ agent: { session } })).toContain('Cold start should show this user memory')
+  })
+
   it('writes, warms the core cache and clears it on dispose', async () => {
     const { ctx: context, cwd } = await setup({ trustCandidatesInCore: true })
     const write = tool(context, 'memory_write')
@@ -87,7 +107,7 @@ describe('plugin integration', () => {
     await waitFor(() => context.sections[0]?.text({ agent: { session } }) !== '')
     expect(context.sections[0]?.text({ agent: { session } })).toContain('The user prefers pnpm')
 
-    // Write a project fact so the core has project-scoped content too.
+    // 再写一条项目事实，让核心层也包含项目作用域的内容。
     const fact = await tool(context, 'memory_write').execute(
       {
         slug: 'health-endpoint',

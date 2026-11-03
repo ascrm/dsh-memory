@@ -1,14 +1,13 @@
 /**
- * Injection audit.
+ * 注入审计。
  *
- * Records which memory IDs entered one session's prompt and how large the pack
- * was. The core cache deduplicates by set signature; this module only appends,
- * never blocks, and never records body text.
+ * 记录哪些记忆 ID 进入了某个会话的提示词，以及该 pack 有多大。核心缓存会按集合签名
+ * 去重；本模块只负责追加，从不阻塞，也从不记录正文。
  */
 import type { MemoryStore } from '../store/store.ts'
 import type { CorePack, InjectionAudit } from './core.ts'
 
-/** Build an injection auditor bound to a store. */
+/** 构建一个绑定到某个 store 的注入审计器。 */
 export function createInjectionAuditor(store: MemoryStore): InjectionAudit {
   return (sessionId: string, scope: string, pack: CorePack): void => {
     void store.audit

@@ -1,10 +1,9 @@
 /**
- * Optional automatic capture (Phase 2).
+ * 可选的自动捕获（第二阶段）。
  *
- * Buffers root-session text, and on `agent/disposed` asks the configured model
- * for a small JSON array of durable memories. Everything is written as a
- * candidate through the store; verification stays user-only. Every failure is
- * contained: capture never affects the session.
+ * 缓冲根会话的文本，并在 `agent/disposed` 时请求所配置的模型返回一个小型 JSON 数组，
+ * 其中是值得长期保留的记忆。所有内容都以 candidate 身份经由 store 写入；验证始终只由
+ * 用户完成。任何失败都会被隔离：捕获绝不影响会话。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, type ContentBlock, type UserMessage } from '@deepseek-ai/dsh-llm'
@@ -44,7 +43,7 @@ interface CandidateItem {
   evidence?: unknown
 }
 
-/** Handle returned by {@link registerCapture}. */
+/** {@link registerCapture} 返回的句柄。 */
 export interface CaptureHandle {
   verifyEvidence: (quote: string, sessionId?: string) => boolean
   stop: () => void
@@ -103,7 +102,7 @@ function parseCandidates(raw: string): CandidateItem[] {
   }
 }
 
-/** Build the extraction prompt. */
+/** 构建提取用的提示词。 */
 export function buildCapturePrompt(existing: Array<{ slug: string; summary: string }>, transcript: string): string {
   const digest = existing
     .slice(0, 60)
@@ -127,7 +126,7 @@ ${transcript}
 </transcript>`
 }
 
-/** Register capture listeners and install the evidence verifier. */
+/** 注册捕获监听器，并安装 evidence 校验器。 */
 export function registerCapture(
   ctx: Context,
   store: MemoryStore,
@@ -272,7 +271,7 @@ export function registerCapture(
         }
         if (written > 0) for (const scope of changed) core.invalidate(scope)
       } catch {
-        // Extraction is best-effort and must never disturb session teardown.
+        // 提取是尽力而为的，绝不能干扰会话的收尾流程。
       }
     })()
     active.add(task)

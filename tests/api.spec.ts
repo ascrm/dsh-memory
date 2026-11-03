@@ -87,6 +87,61 @@ describe('panel API', () => {
     expect(afterMute.entries).toHaveLength(0)
   })
 
+  it('serves the minimal panel page', async () => {
+    harness = await createStore()
+    const api = makeApi()
+    const response = await api.call('/panel')
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/html')
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'none'")
+    expect(await response.text()).toContain('dsh-memory')
+    const scan = await api.call('/scan-conflicts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scope: 'user' })
+    })
+    expect(scan.status).toBe(200)
+    expect((await scan.json()) as { scanned: number }).toMatchObject({ scanned: 0 })
+  })
+
+  it('resolves a bidirectional conflict through the panel API', async () => {
+    harness = await createStore()
+    const api = makeApi()
+    const first = await harness.store.write({
+      slug: 'conflict-a',
+      kind: 'preference',
+      title: 'Conflict A',
+      summary: 'Use pnpm for package management',
+      body: 'a',
+      scope: { type: 'user' }
+    })
+    const second = await harness.store.write({
+      slug: 'conflict-b',
+      kind: 'preference',
+      title: 'Conflict B',
+      summary: 'Use pnpm for package management',
+      body: 'b',
+      scope: { type: 'user' }
+    })
+    const response = await api.call('/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        keepId: first.record.id,
+        otherId: second.record.id,
+        mode: 'keep'
+      })
+    })
+    expect(response.status).toBe(200)
+    const resolved = (await response.json()) as { keep: { trust: string }; other: { trust: string } }
+    expect(resolved.keep.trust).toBe('candidate')
+    expect(resolved.other.trust).toBe('superseded')
+    const keep = await harness.store.locate(first.record.id, { scope: { type: 'user' } })
+    expect(keep?.record.conflictOf).toBeUndefined()
+    const review = (await (await api.call('/review')).json()) as { conflicts: unknown[] }
+    expect(review.conflicts).toHaveLength(0)
+  })
+
   it('reports stats, review, doctor and export', async () => {
     harness = await createStore()
     const api = makeApi()

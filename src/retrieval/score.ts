@@ -1,10 +1,10 @@
 /**
- * Final ranking, staleness and diversity selection.
+ * 最终排名、陈旧度与多样性选择。
  */
 import type { MemoryKind, MemoryRecord, MemoryScope } from '../types.ts'
 import { textSimilarity } from '../store/sanitize.ts'
 
-/** Fixed score weights from §7.3. */
+/** §7.3 中固定的分数权重。 */
 export const SCORE_WEIGHTS = {
   bm25: 0.55,
   recency: 0.15,
@@ -14,7 +14,7 @@ export const SCORE_WEIGHTS = {
   kind: 0.05
 } as const
 
-/** Trust contribution. */
+/** trust 贡献。 */
 export const TRUST_WEIGHT: Record<MemoryRecord['trust'], number> = {
   verified: 1,
   candidate: 0.5,
@@ -22,7 +22,7 @@ export const TRUST_WEIGHT: Record<MemoryRecord['trust'], number> = {
   superseded: 0
 }
 
-/** Kind contribution. */
+/** 类型贡献。 */
 export const KIND_WEIGHT: Record<MemoryKind, number> = {
   constraint: 1,
   decision: 1,
@@ -32,12 +32,12 @@ export const KIND_WEIGHT: Record<MemoryKind, number> = {
   episode: 0.4
 }
 
-/** Long-lived kinds that do not go stale automatically. */
+/** 不会自动变陈旧的长期类型。 */
 const LONG_TERM_KINDS = new Set<MemoryKind>(['preference', 'constraint', 'decision'])
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** Exponential recency in [0, 1]. */
+/** [0, 1] 区间内的指数式新近度。 */
 export function recencyScore(
   record: { lastUsedAt?: number; updatedAt: number },
   now: number,
@@ -47,24 +47,24 @@ export function recencyScore(
   return recencyFrom(anchor, now, halfLifeDays)
 }
 
-/** Scope contribution: 1 for the current project, 0.7 for user, 0.2 otherwise. */
+/** 作用域贡献：当前项目为 1，用户作用域为 0.7，其他为 0.2。 */
 export function scopeMatchScore(record: { scope: MemoryScope }, currentProjectKey?: string): number {
   if (record.scope.type === 'user') return 0.7
   if (currentProjectKey !== undefined && record.scope.key === currentProjectKey) return 1
   return 0.2
 }
 
-/** Importance normalized from 1–10 into [0, 1]. */
+/** 把 importance 从 1–10 归一化到 [0, 1]。 */
 export function importanceNorm(importance: number): number {
   return (Math.min(10, Math.max(1, importance)) - 1) / 9
 }
 
-/** Whether a record's TTL elapsed. */
+/** 记录是否已超过 TTL。 */
 export function isExpired(record: MemoryRecord, now: number): boolean {
   return record.expiresAt !== undefined && record.expiresAt < now
 }
 
-/** Whether a record is stale by the configured threshold. */
+/** 记录是否已按配置的阈值判定为陈旧。 */
 export function isStale(record: MemoryRecord, now: number, staleAfterDays: number): boolean {
   if (staleAfterDays <= 0) return false
   if (record.pinned) return false
@@ -73,7 +73,7 @@ export function isStale(record: MemoryRecord, now: number, staleAfterDays: numbe
   return now - anchor > staleAfterDays * DAY_MS
 }
 
-/** Minimal metadata needed to score a memory without constructing a full record. */
+/** 给记忆打分所需的最小元数据，无需构造完整记录。 */
 export interface ScoreMeta {
   kind: MemoryKind
   trust: MemoryRecord['trust']
@@ -93,13 +93,13 @@ function recencyFrom(
   return Math.exp(-days / halfLife)
 }
 
-/** Metadata minus the scope, so callers can score an indexed doc without copying it. */
+/** 去掉作用域后的元数据，便于调用方直接给索引文档打分而不必复制它。 */
 export type ScoreDocMeta = Omit<ScoreMeta, 'scope'> & {
-  /** Optional precomputed trust + importance + kind contribution. */
+  /** 可选的预计算值：trust + importance + kind 的贡献。 */
   priorScore?: number
 }
 
-/** Final weighted score for a lightweight metadata view plus its scope. */
+/** 轻量元数据视图加上其作用域后的最终加权分数。 */
 export function scoreDoc(
   meta: ScoreDocMeta,
   scope: MemoryScope,
@@ -124,7 +124,7 @@ export function scoreDoc(
   )
 }
 
-/** Final weighted score for a lightweight metadata view. */
+/** 轻量元数据视图的最终加权分数。 */
 export function scoreMeta(
   meta: ScoreMeta,
   input: {
@@ -137,7 +137,7 @@ export function scoreMeta(
   return scoreDoc(meta, meta.scope, input)
 }
 
-/** Final weighted score for one candidate. */
+/** 单个候选的最终加权分数。 */
 export function finalScore(
   record: MemoryRecord,
   input: {
@@ -150,7 +150,7 @@ export function finalScore(
   return scoreMeta(record, input)
 }
 
-/** Core-layer score from §8.2. */
+/** §8.2 中的核心层分数。 */
 export function coreScore(
   record: MemoryRecord,
   now: number,
@@ -164,14 +164,14 @@ export function coreScore(
   )
 }
 
-/** One scored candidate. */
+/** 一个已打分的候选。 */
 export interface ScoredMemory {
   record: MemoryRecord
   score: number
   bm25: number
 }
 
-/** Remove exact-slug and near-duplicate summaries, keeping the higher score. */
+/** 去掉 slug 完全相同和摘要近似的重复项，保留分数更高的那条。 */
 export function dedupeCandidates(candidates: readonly ScoredMemory[]): ScoredMemory[] {
   const sorted = [...candidates].sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id))
   const kept: ScoredMemory[] = []
@@ -188,8 +188,8 @@ export function dedupeCandidates(candidates: readonly ScoredMemory[]): ScoredMem
 }
 
 /**
- * Maximal marginal relevance over the top candidates.
- * `lambda = 0.7` balances relevance against redundancy.
+ * 对头部候选做最大边际相关（MMR）选择。
+ * `lambda = 0.7` 在相关性与冗余度之间取平衡。
  */
 export function mmrSelect(
   candidates: readonly ScoredMemory[],

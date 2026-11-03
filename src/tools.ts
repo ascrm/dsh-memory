@@ -1,10 +1,9 @@
 /**
- * Model-facing tools.
+ * 面向模型的工具。
  *
- * `memory_write` can only create candidates; verification, disputes and pinning
- * are user-only operations exposed through the panel API (and the CLI-less file
- * surface). Destructive `memory_forget(hard=true)` is gated by a pre-execute
- * approval in `index.ts`.
+ * `memory_write` 只能创建 candidate；验证、dispute 和 pin 都是仅限用户的操作，
+ * 通过面板 API（以及无 CLI 的文件接口）暴露。破坏性的 `memory_forget(hard=true)`
+ * 由 `index.ts` 中的 pre-execute 审批把关。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -25,7 +24,7 @@ import { redactSecrets, sanitizeBody, sanitizeInjectionText } from './store/sani
 import { extractLinks } from './ids.ts'
 import type { CoreCache } from './injection/core.ts'
 
-/** Dependencies shared by the registered tools. */
+/** 各已注册工具共享的依赖项。 */
 export interface ToolDeps {
   store: MemoryStore
   core: CoreCache
@@ -71,7 +70,7 @@ function scopeLabel(scope: MemoryScope): string {
   return scopeKey(scope)
 }
 
-/** Register all memory tools on the context. */
+/** 在 context 上注册全部记忆工具。 */
 export function registerTools(ctx: Context, deps: ToolDeps): void {
   const { store, core } = deps
 
@@ -247,7 +246,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
           scope = requireProjectScope(store, exec)
         } else {
           const projectScope = projectScopeOf(store, exec)
-          if (projectScope !== undefined) scope = undefined // search user first, then project
+          if (projectScope !== undefined) scope = undefined // 先查用户作用域，再查项目
         }
         const located = await store.read(id ?? slug!, {
           scope,
@@ -366,7 +365,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): void {
         } else if (args.scope === 'project') {
           scope = requireProjectScope(store, exec)
         } else if (args.scope === undefined && args.id !== undefined && args.id.trim().length > 0) {
-          // An update keeps the existing memory's scope unless the caller overrides it.
+          // 更新时沿用原记忆的作用域，除非调用方显式覆盖。
           const existing = await store.locate(args.id, { allProjects: true })
           if (existing !== undefined) {
             scope = existing.scope

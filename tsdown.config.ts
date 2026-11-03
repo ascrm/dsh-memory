@@ -12,7 +12,7 @@ const peers = [
 ]
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/cli.ts'],
   outDir: 'lib',
   platform: 'node',
   format: ['esm'],

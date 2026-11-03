@@ -1,11 +1,10 @@
 /**
- * Optional HTTP panel API, registered on the host `connection` service.
+ * 可选的 HTTP 面板 API，注册在宿主的 `connection` 服务上。
  *
- * Routes live inside dsh's authenticated fence (loopback by default). The API
- * never accepts filesystem paths: project files are always derived from the
- * `cwd` query/body field, and ids are validated by the store.
+ * 路由位于 dsh 的认证围栏之内（默认仅回环地址）。该 API 从不接受文件系统路径：项目
+ * 文件始终由 `cwd` 查询参数/请求体字段推导，id 则由 store 校验。
  */
-import type { MemoryConfig, MemoryRecord, MemoryScope } from './types.ts'
+import type { MemoryConfig, MemoryMergeInput, MemoryRecord, MemoryScope } from './types.ts'
 import { MemoryError, MEMORY_KINDS, type MemoryKind } from './types.ts'
 import type { MemoryStore } from './store/store.ts'
 import type { CoreCache } from './injection/core.ts'
@@ -14,6 +13,7 @@ import { scopeKey } from './store/paths.ts'
 import { sanitizeBody, sanitizeInjectionText, singleLine } from './store/sanitize.ts'
 import { detectSuspicious } from './store/sanitize.ts'
 import { selectCore } from './injection/core.ts'
+import { PANEL_HTML } from './panel.ts'
 
 interface PanelRoute {
   path: string
@@ -28,7 +28,7 @@ interface ConnectionLike {
   }
 }
 
-/** Dependencies for the panel API. */
+/** 面板 API 的依赖项。 */
 export interface PanelDeps {
   store: MemoryStore
   config: MemoryConfig
@@ -114,7 +114,7 @@ function panelRecord(record: MemoryRecord): Record<string, unknown> {
   }
 }
 
-/** Resolve a project scope from a cwd parameter. */
+/** 从 cwd 参数解析项目作用域。 */
 function projectScopeOf(store: MemoryStore, cwd: string | undefined): MemoryScope | undefined {
   return cwd !== undefined && cwd.length > 0 ? store.scopeForCwd(cwd) : undefined
 }
@@ -139,7 +139,7 @@ function resolveScope(
   return scope
 }
 
-/** Register the panel API on a connection service. */
+/** 在 connection 服务上注册面板 API。 */
 export function registerMemoryApi(connection: ConnectionLike, deps: PanelDeps): void {
   const { store, config, core } = deps
 
@@ -301,6 +301,53 @@ export function registerMemoryApi(connection: ConnectionLike, deps: PanelDeps): 
   })
 
   connection.fetch.register({
+    path: `${BASE}/resolve`,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const body = await readBody(request)
+        const keepId = typeof body.keepId === 'string' ? body.keepId : ''
+        const otherId = typeof body.otherId === 'string' ? body.otherId : ''
+        const mode = body.mode === 'merge' || body.mode === 'both' ? body.mode : 'keep'
+        const located = await store.locate(keepId, { allProjects: true })
+        if (located === undefined) return json({ error: 'NOT_FOUND', message: 'keepId not found' }, 404)
+        const result = await store.resolveConflict(
+          keepId,
+          otherId,
+          mode,
+          (body.merged ?? {}) as MemoryMergeInput
+        )
+        core.invalidate(located.scope)
+        return json({ keep: panelRecord(result.keep), other: panelRecord(result.other) })
+      } catch (error) {
+        return failure(error)
+      }
+    }
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/scan-conflicts`,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        const body = await readBody(request)
+        const scope = body.scope === 'user' ? 'user' : body.scope === 'all' ? 'all' : 'project'
+        const locatedScope =
+          scope === 'user' ? { type: 'user' as const } : scope === 'project' ? projectScopeOf(store, typeof body.cwd === 'string' ? body.cwd : undefined) : undefined
+        if (scope === 'project' && locatedScope === undefined) {
+          return json({ error: 'SCOPE_REQUIRED', message: 'project scope requires cwd' }, 400)
+        }
+        const result = await store.scanConflicts(locatedScope, { mark: true })
+        return json(result)
+      } catch (error) {
+        return failure(error)
+      }
+    }
+  })
+
+  connection.fetch.register({
     path: `${BASE}/forget`,
     methods: ['POST'],
     requestBody: 'buffered',
@@ -348,7 +395,7 @@ export function registerMemoryApi(connection: ConnectionLike, deps: PanelDeps): 
       try {
         const url = new URL(request.url)
         const projectScope = projectScopeOf(store, url.searchParams.get('cwd') ?? undefined)
-        const review = await store.review(projectScope)
+        const review = await store.review(projectScope, projectScope === undefined ? 'all' : 'project')
         const map = (docs: typeof review.candidates) =>
           docs.map((doc) => ({ ...doc, id: displayId(doc.id), summary: sanitizeInjectionText(doc.summary, 200) }))
         return json({
@@ -507,6 +554,22 @@ export function registerMemoryApi(connection: ConnectionLike, deps: PanelDeps): 
         return failure(error)
       }
     }
+  })
+
+  connection.fetch.register({
+    path: `${BASE}/panel`,
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: async () =>
+      new Response(PANEL_HTML, {
+        status: 200,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'content-security-policy':
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+        }
+      })
   })
 
   connection.fetch.register({

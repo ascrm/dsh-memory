@@ -1,10 +1,8 @@
 /**
- * Single write point for every memory.
+ * 每条记忆唯一的写入入口。
  *
- * All mutation paths (tools, panel API, import, auto capture) go through this
- * class. Files are written atomically under a per-scope cross-process lock;
- * `index.json` is a best-effort derivative that is rebuilt from Markdown when
- * stale.
+ * 所有变更路径（工具、面板 API、导入、自动捕获）都经过这个类。文件在按作用域的跨进程
+ * 锁保护下原子写入；`index.json` 只是尽力维护的派生物，过期时会从 Markdown 重建。
  */
 import { promises as fs } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -22,6 +20,7 @@ import {
   type MemoryConfig,
   type MemoryKind,
   type MemoryListOptions,
+  type MemoryMergeInput,
   type MemoryRecord,
   type MemoryScope,
   type MemorySearchHit,
@@ -37,11 +36,13 @@ import {
   parseScopeIndexJson,
   renderIndexMarkdown,
   serializeScopeIndex,
+  toIndexedDoc,
   type IndexedDoc,
   type MalformedFile,
   type ScopeIndex,
   type SourceFileEntry
 } from './index.ts'
+import { SqliteIndex, type SqliteFileStat } from './sqlite.ts'
 import {
   normalizeSlug,
   normalizeSource,
@@ -72,7 +73,7 @@ import {
   type ProjectIdentity
 } from './paths.ts'
 import { MemoryAudit } from './audit.ts'
-import { BM25_B, BM25_K1 } from '../retrieval/bm25.ts'
+import { BM25_B, BM25_K1, indexRecord } from '../retrieval/bm25.ts'
 import { tokenize } from '../retrieval/tokenize.ts'
 import {
   dedupeCandidates,
@@ -81,7 +82,7 @@ import {
   type ScoredMemory
 } from '../retrieval/score.ts'
 
-/** Options for constructing a store. */
+/** 构造 store 的选项。 */
 export interface MemoryStoreOptions {
   now?: () => number
   warn?: (message: string) => void
@@ -102,7 +103,7 @@ interface FileStat {
   mtimeMs: number
 }
 
-/** The one write API for memories. */
+/** 记忆唯一的写入 API。 */
 export class MemoryStore {
   readonly root: string
   readonly config: MemoryConfig
@@ -112,6 +113,8 @@ export class MemoryStore {
   private readonly lockWaitMs: number
   private readonly cache = new Map<string, ScopeIndex>()
   private readonly meta = new Map<string, { statSignature: string; indexMtimeMs: number; checkedAt: number }>()
+  private readonly sqliteIndexes = new Map<string, SqliteIndex>()
+  private sqliteFallbackUntil = 0
   private version = 0
   private evidenceVerifier?: (quote: string, sessionId?: string) => boolean
 
@@ -124,31 +127,31 @@ export class MemoryStore {
     this.audit = new MemoryAudit(this.root, this.warn)
   }
 
-  /** Install a transcript-backed evidence verifier (used by auto capture). */
+  /** 安装一个基于 transcript 的 evidence 校验器（自动捕获会用到）。 */
   setEvidenceVerifier(verifier: ((quote: string, sessionId?: string) => boolean) | undefined): void {
     if (verifier === undefined) delete this.evidenceVerifier
     else this.evidenceVerifier = verifier
   }
 
-  /** Create the root layout. */
+  /** 创建根目录结构。 */
   async init(): Promise<void> {
     await fs.mkdir(this.root, { recursive: true, mode: 0o700 })
     const tmp = join(this.root, 'tmp')
     await fs.mkdir(tmp, { recursive: true, mode: 0o700 })
-    // Crash leftovers: remove stale temporary files from the dedicated tmp dir.
+    // 崩溃残留：清掉专用 tmp 目录里过期的临时文件。
     try {
       for (const entry of await fs.readdir(tmp)) {
         await fs.rm(join(tmp, entry), { recursive: true, force: true }).catch(() => {})
       }
     } catch {
-      // A missing or unreadable tmp dir is not fatal.
+      // tmp 目录缺失或不可读并不致命。
     }
     if (this.config.enableUserScope) {
       await fs.mkdir(memoriesDir(this.root, { type: 'user' }), { recursive: true, mode: 0o700 })
     }
   }
 
-  /** Ensure project metadata exists and is current. */
+  /** 确保项目元数据存在且是最新的。 */
   async ensureProject(scope: MemoryScope, cwd: string): Promise<ProjectIdentity | undefined> {
     if (scope.type !== 'project') return undefined
     const identity = projectIdentity(cwd, this.config.projectScope)
@@ -181,31 +184,38 @@ export class MemoryStore {
     return identity
   }
 
-  /** Resolve the project scope for a working directory. */
+  /** 解析某个工作目录对应的项目作用域。 */
   scopeForCwd(cwd: string): MemoryScope {
     return projectScopeFor(cwd, this.config.projectScope)
   }
 
   /**
-   * Load (or rebuild) the index for one scope.
+   * 加载（或重建）某个作用域的索引。
    *
-   * `refresh` forces a full parse. `validate` forces a full stat check (used on
-   * `agent/created` so external hand edits are noticed). Otherwise the in-memory
-   * index is served directly, with a cheap `index.json` mtime probe every two
-   * seconds to notice writes from another process.
+   * `refresh` 强制完整解析。`validate` 强制做一次完整的 stat 检查（在 `agent/created`
+   * 时使用，以便发现外部手工编辑）。否则直接使用内存中的索引，每次访问时对
+   * `index.json` 做一次廉价的 mtime 探测，以察觉另一个进程的写入。
    */
   async getScopeIndex(
     scope: MemoryScope,
     options: { refresh?: boolean; validate?: boolean } = {}
   ): Promise<ScopeIndex> {
+    if (this.useSqlite()) {
+      try {
+        return await this.getSqliteScopeIndex(scope, options)
+      } catch (error) {
+        this.sqliteFallbackUntil = Date.now() + 30_000
+        this.warn(`sqlite 索引暂不可用，30 秒内回退 JSON: ${String(error)}`)
+      }
+    }
     const key = scopeKey(scope)
     const cached = this.cache.get(key)
     const meta = this.meta.get(key)
     const now = Date.now()
 
     if (options.refresh !== true && options.validate !== true && cached !== undefined && meta !== undefined) {
-      // One stat detects another process's committed index.json without
-      // re-reading every memory file.
+      // 一次 stat 就能发现另一个进程已提交的 index.json，
+      // 无需重新读取每个记忆文件。
       const mtime = await this.indexJsonMtime(scope)
       if (mtime === meta.indexMtimeMs) {
         meta.checkedAt = now
@@ -250,12 +260,15 @@ export class MemoryStore {
     const { records, malformed, repaired } = await this.parseSourceFiles(scope, files)
     let finalHash = hash
     let finalSignature = statSignature
+    let fileEntries = new Map(files.map((file) => [file.filenameId, file.entry]))
     if (repaired) {
       const repairedStats = await this.listMemoryFileStats(scope)
-      finalHash = computeSourceHash((await this.readSourceFiles(scope, repairedStats)).map((file) => file.entry))
+      const repairedFiles = await this.readSourceFiles(scope, repairedStats)
+      finalHash = computeSourceHash(repairedFiles.map((file) => file.entry))
       finalSignature = computeStatSignature(repairedStats)
+      fileEntries = new Map(repairedFiles.map((file) => [file.filenameId, file.entry]))
     }
-    const index = buildScopeIndex(records, key, finalHash, this.version, malformed)
+    const index = buildScopeIndex(records, key, finalHash, this.version, malformed, fileEntries)
     this.cache.set(key, index)
     await this.persistIndex(scope, index)
     this.meta.set(key, {
@@ -266,7 +279,93 @@ export class MemoryStore {
     return index
   }
 
-  /** Force a rebuild of one or all scopes. */
+  private useSqlite(): boolean {
+    return this.config.indexBackend === 'sqlite' && Date.now() >= this.sqliteFallbackUntil
+  }
+
+  private sqliteFor(scope: MemoryScope): SqliteIndex {
+    const key = scopeKey(scope)
+    let index = this.sqliteIndexes.get(key)
+    if (index === undefined) {
+      index = new SqliteIndex(this.root, scope)
+      this.sqliteIndexes.set(key, index)
+    }
+    return index
+  }
+
+  private async parseSqliteFile(
+    stat: SqliteFileStat,
+    scope: MemoryScope
+  ): Promise<{ record: MemoryRecord; contentHash: string } | null> {
+    try {
+      const text = await fs.readFile(stat.file, 'utf8')
+      const parsed = parseMemoryFile(text, scope, this.now())
+      const record = parsed.record
+      if (isUlid(stat.filenameId)) record.id = stat.filenameId
+      return { record, contentHash: contentHashOf(text) }
+    } catch (error) {
+      this.warn(`sqlite 索引跳过无法解析的文件 ${stat.file}: ${String(error)}`)
+      return null
+    }
+  }
+
+  private async getSqliteScopeIndex(
+    scope: MemoryScope,
+    options: { refresh?: boolean; validate?: boolean } = {}
+  ): Promise<ScopeIndex> {
+    const key = scopeKey(scope)
+    const cached = this.cache.get(key)
+    const meta = this.meta.get(key)
+    const handle = this.sqliteFor(scope)
+    const mtime = await handle.mtime()
+    if (
+      options.refresh !== true &&
+      options.validate !== true &&
+      cached !== undefined &&
+      meta !== undefined &&
+      mtime !== 0 &&
+      mtime === meta.indexMtimeMs
+    ) {
+      meta.checkedAt = Date.now()
+      return cached
+    }
+
+    const stats = await this.listMemoryFileStats(scope)
+    const synced = await handle.sync(stats, (stat) => this.parseSqliteFile(stat, scope), {
+      refresh: options.refresh === true
+    })
+    this.version += 1
+    const index: ScopeIndex = {
+      scopeKey: key,
+      builtAt: Date.now(),
+      sourceHash: synced.sourceHash,
+      docs: synced.docs,
+      postings: new Map(),
+      records: synced.records,
+      version: this.version,
+      malformed: synced.malformed,
+      hydrated: true,
+      backend: 'sqlite'
+    }
+    this.cache.set(key, index)
+    this.meta.set(key, {
+      statSignature: computeStatSignature(stats),
+      indexMtimeMs: await handle.mtime(),
+      checkedAt: Date.now()
+    })
+    await this.persistIndex(scope, index)
+    return index
+  }
+
+  /** 关闭 SQLite 索引连接（收尾时调用）。 */
+  close(): void {
+    for (const index of this.sqliteIndexes.values()) index.close()
+    this.sqliteIndexes.clear()
+    this.cache.clear()
+    this.meta.clear()
+  }
+
+  /** 强制重建一个或所有作用域的索引。 */
   async refresh(scope?: MemoryScope): Promise<{ scopes: Array<{ scope: string; docs: number }> }> {
     const scopes = scope !== undefined ? [scope] : this.allScopes()
     const out: Array<{ scope: string; docs: number }> = []
@@ -283,10 +382,10 @@ export class MemoryStore {
     return { scopes: out }
   }
 
-  /** Write or update one memory. */
+  /** 写入或更新一条记忆。 */
   async write(
     input: MemoryWriteInput,
-    options: { actor?: 'model' | 'user' | 'system' } = {}
+    options: { actor?: 'model' | 'user' | 'system'; allowCreateWithId?: boolean } = {}
   ): Promise<MemoryWriteResult> {
     this.validateScopeKind(input.scope, input.kind)
     if (input.scope.type === 'project' && input.scope.key.trim().length === 0) {
@@ -331,7 +430,7 @@ export class MemoryStore {
         existingId !== undefined
           ? await this.readInScope(existingId, scope)
           : undefined
-      if (existingId !== undefined && existing === undefined) {
+      if (existingId !== undefined && existing === undefined && options.allowCreateWithId !== true) {
         throw new MemoryError('NOT_FOUND', `memory ${displayId(existingId)} does not exist`)
       }
 
@@ -346,6 +445,7 @@ export class MemoryStore {
       let record: MemoryRecord
       let operation: 'created' | 'updated'
       let conflicts: string[] = []
+      let previousConflicts: string[] = []
 
       if (existing === undefined) {
         const id = existingId ?? generateRecordId()
@@ -378,8 +478,6 @@ export class MemoryStore {
         } else if (typeof input.expiresAt === 'number') {
           record.expiresAt = input.expiresAt
         }
-        conflicts = this.detectConflicts(index, record)
-        if (conflicts.length > 0) record.conflictOf = conflicts
         operation = 'created'
       } else {
         const contentChanged =
@@ -409,16 +507,32 @@ export class MemoryStore {
           delete record.verifiedAt
         }
         if (typeof input.expiresAt === 'number') record.expiresAt = input.expiresAt
+        previousConflicts = existing.conflictOf ?? []
         operation = 'updated'
       }
 
+      conflicts = this.detectConflicts(index, record)
+      if (conflicts.length > 0) record.conflictOf = conflicts
+      else delete record.conflictOf
+
       const file = this.findFile(scope, record.id) ?? join(memoriesDir(this.root, scope), `${record.id}.md`)
       await writeFileAtomic(file, serializeMemoryFile(record), { mode: 0o600, dirMode: 0o700 })
-      this.invalidateScope(scope)
-      // The file is the commit point. A failed index refresh is repaired later.
+      // 冲突标记是双向的：另一条记录也要指向本条；内容修改解除冲突时反向清理。
+      await this.syncConflictMarkers(scope, record.id, previousConflicts, conflicts)
+      // 文件写入成功即为提交点。索引刷新失败会在之后自动修复。
       try {
-        const next = await this.getScopeIndex(scope, { refresh: true })
-        await this.persistIndex(scope, next)
+        if (this.useSqlite()) {
+          this.invalidateScope(scope)
+          const next = await this.getScopeIndex(scope)
+          await this.persistIndex(scope, next)
+        } else if (conflicts.length > 0 || previousConflicts.length > 0) {
+          // 冲突标记会改动其他文件；这种情况回退全量重建。
+          this.invalidateScope(scope)
+          const next = await this.getScopeIndex(scope, { refresh: true })
+          await this.persistIndex(scope, next)
+        } else {
+          await this.updateIndexAfterWrite(scope, record)
+        }
       } catch (error) {
         this.warn(`index refresh after write failed: ${String(error)}`)
       }
@@ -439,7 +553,7 @@ export class MemoryStore {
     return { ...result, truncated: false }
   }
 
-  /** Read a memory by id or slug, preferring the caller's scope. */
+  /** 按 id 或 slug 读取一条记忆，优先使用调用方所在的作用域。 */
   async read(
     idOrSlug: string,
     options: { scope?: MemoryScope; projectScope?: MemoryScope; allProjects?: boolean } = {}
@@ -457,7 +571,7 @@ export class MemoryStore {
     return undefined
   }
 
-  /** Locate without touching usage counters. */
+  /** 只定位，不更新使用计数。 */
   async locate(
     idOrSlug: string,
     options: { scope?: MemoryScope; projectScope?: MemoryScope; allProjects?: boolean } = {}
@@ -469,13 +583,14 @@ export class MemoryStore {
     return undefined
   }
 
-  /** Mute or permanently delete one memory. */
+  /** 将一条记忆静音（muted）或永久删除。 */
   async forget(id: string, mode: 'mute' | 'delete', scope?: MemoryScope): Promise<{ id: string; mode: string }> {
     const located = await this.requireLocated(id, scope)
     if (mode === 'delete') {
       await this.withScopeLock(located.scope, async () => {
         await fs.rm(located.file, { force: true })
-        this.invalidateScope(located.scope)
+        if (this.useSqlite()) this.invalidateScope(located.scope)
+        else await this.removeIndexRecord(located.scope, located.record.id)
       })
     } else {
       await this.mutate(located, (record) => {
@@ -494,7 +609,7 @@ export class MemoryStore {
     return { id: located.record.id, mode }
   }
 
-  /** Mark a memory verified. Only users call this. */
+  /** 把一条记忆标记为已验证。只有用户会调用。 */
   async verify(id: string, scope?: MemoryScope): Promise<MemoryRecord> {
     const located = await this.requireLocated(id, scope)
     if (located.record.trust === 'superseded') {
@@ -515,7 +630,7 @@ export class MemoryStore {
     return record
   }
 
-  /** Mark a memory disputed. Disputed memories leave the core layer. */
+  /** 把一条记忆标记为 disputed。disputed 的记忆会退出核心层。 */
   async dispute(id: string, scope?: MemoryScope): Promise<MemoryRecord> {
     const located = await this.requireLocated(id, scope)
     const record = await this.mutate(located, (item) => {
@@ -531,7 +646,7 @@ export class MemoryStore {
     return record
   }
 
-  /** Restore a disputed/superseded/muted memory to candidate. */
+  /** 把 disputed/superseded/muted 的记忆恢复为 candidate。 */
   async restore(id: string, scope?: MemoryScope): Promise<MemoryRecord> {
     const located = await this.requireLocated(id, scope)
     const record = await this.mutate(located, (item) => {
@@ -551,7 +666,7 @@ export class MemoryStore {
     return record
   }
 
-  /** Pin or unpin a memory (user operation). */
+  /** 固定或取消固定一条记忆（用户操作）。 */
   async setPinned(id: string, pinned: boolean, scope?: MemoryScope): Promise<MemoryRecord> {
     const located = await this.requireLocated(id, scope)
     const record = await this.mutate(located, (item) => {
@@ -568,7 +683,122 @@ export class MemoryStore {
     return record
   }
 
-  /** Mark `oldId` superseded by `newId`; both sides are written. */
+  /**
+   * 用户解决冲突：
+   * - `keep`：保留 keep，把 other 标记为被取代；
+   * - `merge`：把 other 合并进 keep（可覆盖 title/summary/body/tags/importance），再把 other 标记为被取代；
+   * - `both`：两条都保留，只清除双向 conflictOf 标记。
+   */
+  async resolveConflict(
+    keepId: string,
+    otherId: string,
+    mode: 'keep' | 'merge' | 'both',
+    merged: MemoryMergeInput = {}
+  ): Promise<{ keep: MemoryRecord; other: MemoryRecord }> {
+    const keepLocated = await this.requireLocated(keepId)
+    const otherLocated = await this.requireLocated(otherId, keepLocated.scope)
+    if (scopeKey(keepLocated.scope) !== scopeKey(otherLocated.scope)) {
+      throw new MemoryError('SCOPE_FORBIDDEN', '冲突解决要求两条记忆在同一个作用域')
+    }
+    if (keepLocated.record.id === otherLocated.record.id) {
+      throw new MemoryError('INVALID_ARGUMENT', '不能用一条记忆解决与自身的冲突')
+    }
+
+    const result = await this.withScopeLock(keepLocated.scope, async () => {
+      const keep = await this.readInScope(keepLocated.record.id, keepLocated.scope)
+      const other = await this.readInScope(otherLocated.record.id, otherLocated.scope)
+      if (keep === undefined || other === undefined) {
+        throw new MemoryError('NOT_FOUND', '解决冲突时记忆已不存在')
+      }
+      const now = this.now()
+
+      if (mode === 'merge') {
+        const title = singleLine(redactSecrets(merged.title ?? keep.title, this.redactOptions()), 80)
+        const summary = singleLine(redactSecrets(merged.summary ?? keep.summary, this.redactOptions()), 200)
+        const body = sanitizeBody(merged.body ?? keep.body, this.redactOptions())
+        const tags =
+          merged.tags !== undefined
+            ? normalizeTags(merged.tags)
+            : [...new Set([...keep.tags, ...other.tags])]
+        const importance =
+          merged.importance !== undefined
+            ? clampImportance(merged.importance)
+            : Math.max(keep.importance, other.importance)
+        const contentChanged =
+          keep.title !== title || keep.summary !== summary || keep.body !== body
+        keep.title = title
+        keep.summary = summary
+        keep.body = body
+        keep.tags = tags
+        keep.importance = importance
+        if (contentChanged) {
+          keep.revision += 1
+          if (keep.trust === 'verified') {
+            keep.trust = 'candidate'
+            delete keep.verifiedBy
+            delete keep.verifiedAt
+          }
+        }
+        if (merged.evidence !== undefined && merged.evidence.trim().length > 0) {
+          const quote = singleLine(redactSecrets(merged.evidence, this.redactOptions()), 500)
+          if (this.verifyEvidence(quote, undefined)) keep.evidence = evidenceFor(quote)
+        } else if (contentChanged) {
+          delete keep.evidence
+        }
+      }
+
+      const otherConflicts = [...new Set(other.conflictOf ?? [])]
+      keep.conflictOf = (keep.conflictOf ?? []).filter((id) => id !== other.id)
+      if (keep.conflictOf.length === 0) delete keep.conflictOf
+      if (mode !== 'both') {
+        // 被取代的记录不再需要冲突标记：同时从其他冲突记录中移除它。
+        for (const id of otherConflicts) {
+          if (id === keep.id) continue
+          const file = this.findFile(keep.scope, id)
+          if (file === undefined) continue
+          const sibling = await this.readInScope(id, keep.scope)
+          if (sibling === undefined) continue
+          const remaining = (sibling.conflictOf ?? []).filter((item) => item !== other.id)
+          if (remaining.length > 0) sibling.conflictOf = remaining
+          else delete sibling.conflictOf
+          await writeFileAtomic(file, serializeMemoryFile(sibling), { mode: 0o600, dirMode: 0o700 })
+        }
+        delete other.conflictOf
+        keep.supersedes = other.id
+        other.supersededBy = keep.id
+        other.trust = 'superseded'
+      } else {
+        other.conflictOf = otherConflicts.filter((id) => id !== keep.id)
+        if (other.conflictOf.length === 0) delete other.conflictOf
+      }
+      keep.updatedAt = now
+      other.updatedAt = now
+      const keepFile = this.findFile(keep.scope, keep.id)!
+      const otherFile = this.findFile(other.scope, other.id)!
+      await writeFileAtomic(keepFile, serializeMemoryFile(keep), { mode: 0o600, dirMode: 0o700 })
+      await writeFileAtomic(otherFile, serializeMemoryFile(other), { mode: 0o600, dirMode: 0o700 })
+      this.invalidateScope(keep.scope)
+      try {
+        const next = await this.getScopeIndex(keep.scope, this.useSqlite() ? {} : { refresh: true })
+        await this.persistIndex(keep.scope, next)
+      } catch (error) {
+        this.warn(`index refresh after conflict resolution failed: ${String(error)}`)
+      }
+      return { keep, other }
+    })
+
+    await this.audit.append({
+      ts: this.now(),
+      event: 'resolve',
+      actor: 'user',
+      id: result.keep.id,
+      scope: scopeKey(keepLocated.scope),
+      details: { mode, otherId: result.other.id }
+    })
+    return result
+  }
+
+  /** 把 `oldId` 标记为已被 `newId` 取代；两侧都会写入。 */
   async supersede(oldId: string, newId: string, scope?: MemoryScope): Promise<void> {
     const oldLocated = await this.requireLocated(oldId, scope)
     const newLocated = await this.requireLocated(newId, scope ?? oldLocated.scope)
@@ -603,7 +833,7 @@ export class MemoryStore {
     })
   }
 
-  /** Update usage counters (best effort, never bumps `updatedAt`). */
+  /** 更新使用计数（尽力而为，绝不改变 `updatedAt`）。 */
   async touch(id: string, scope?: MemoryScope): Promise<void> {
     const located = await this.requireLocated(id, scope)
     await this.withScopeLock(located.scope, async () => {
@@ -612,8 +842,8 @@ export class MemoryStore {
       record.lastUsedAt = this.now()
       record.useCount += 1
       await writeFileAtomic(located.file, serializeMemoryFile(record), { mode: 0o600, dirMode: 0o700 })
-      // Usage counters are not content: patch the cached index instead of
-      // forcing a full reparse on the next search.
+      // 使用计数不属于内容：直接修补缓存的索引，
+      // 而不是在下次搜索时强制完整重新解析。
       const cached = this.cache.get(scopeKey(located.scope))
       if (cached !== undefined) {
         const doc = cached.docs.get(record.id)
@@ -626,13 +856,39 @@ export class MemoryStore {
           cachedRecord.lastUsedAt = record.lastUsedAt
           cachedRecord.useCount = record.useCount
         }
+        if (cached.files !== undefined) {
+          const stat = await fs.stat(located.file)
+          cached.files.set(record.id, {
+            id: record.id,
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            contentHash: contentHashOf(serializeMemoryFile(record))
+          })
+          cached.sourceHash = computeSourceHash([...cached.files.values()])
+          cached.builtAt = Date.now()
+        }
+      }
+      if (this.useSqlite()) {
+        try {
+          await this.sqliteFor(located.scope).updateUsage(record.id, record.lastUsedAt, record.useCount)
+        } catch (error) {
+          this.warn(`sqlite usage update failed: ${String(error)}`)
+        }
       }
     })
   }
 
-  /** Rank memories for a query. */
+  /** 为一次查询对记忆排序。 */
   async search(options: MemorySearchOptions): Promise<MemorySearchHit[]> {
     if (options.query.trim().length === 0) return []
+    if (this.useSqlite()) {
+      try {
+        return await this.searchSqlite(options)
+      } catch (error) {
+        this.sqliteFallbackUntil = Date.now() + 30_000
+        this.warn(`sqlite 检索暂不可用，30 秒内回退 JSON: ${String(error)}`)
+      }
+    }
     const scopes = this.searchScopes(options)
     if (scopes.length === 0) return []
     const currentProjectKey = options.projectScope?.type === 'project' ? options.projectScope.key : undefined
@@ -656,8 +912,8 @@ export class MemoryStore {
     const terms = [...new Set(tokenize(options.query))]
     if (terms.length === 0) return []
 
-    // Score only documents that contain a query term; postings are queried
-    // directly instead of merging the whole inverted index on every search.
+    // 只给包含查询词的文档打分；直接查 postings，
+    // 而不是每次搜索都合并整个倒排索引。
     const scores = new Float64Array(docCount)
     for (const term of terms) {
       const matches: number[] = []
@@ -701,17 +957,8 @@ export class MemoryStore {
       (score === other.score &&
         (doc.updatedAt > other.doc.updatedAt ||
           (doc.updatedAt === other.doc.updatedAt && doc.id < other.doc.id)))
-    for (let ordinal = 0; ordinal < docCount; ordinal += 1) {
-      const raw = scores[ordinal]!
-      if (raw <= 0) continue
-      const entry = entries[ordinal]!
-      const score = scoreDoc(entry.doc, entry.scope, {
-        bm25Norm: maxBm25 > 0 ? raw / maxBm25 : 0,
-        now,
-        halfLifeDays: this.config.decayHalfLifeDays,
-        currentProjectKey
-      })
-      if (top.length === TOP && !better(score, entry.doc, top[TOP - 1]!)) continue
+    const offer = (raw: number, score: number, entry: (typeof entries)[number]): void => {
+      if (top.length === TOP && !better(score, entry.doc, top[TOP - 1]!)) return
       let low = 0
       let high = top.length
       while (low < high) {
@@ -722,9 +969,35 @@ export class MemoryStore {
       top.splice(low, 0, { doc: entry.doc, scopeKey: entry.scopeKey, bm25: raw, score })
       if (top.length > TOP) top.pop()
     }
-    // Deduplicate and diversify only the head of the ranking; this keeps the
-    // near-duplicate check bounded even when a scope holds tens of thousands of
-    // memories.
+    for (let ordinal = 0; ordinal < docCount; ordinal += 1) {
+      const raw = scores[ordinal]!
+      if (raw <= 0) continue
+      const entry = entries[ordinal]!
+      const score = scoreDoc(entry.doc, entry.scope, {
+        bm25Norm: maxBm25 > 0 ? raw / maxBm25 : 0,
+        now,
+        halfLifeDays: this.config.decayHalfLifeDays,
+        currentProjectKey
+      })
+      offer(raw, score, entry)
+    }
+    // 关键词命中不足时，用其余文档的元数据分补足头部候选。
+    // 查询完全无命中时仍返回空，避免“搜不到却给出无关记忆”的误导。
+    if (options.includeMetadataFallback !== false && top.length > 0 && top.length < TOP) {
+      for (let ordinal = 0; ordinal < docCount && top.length < TOP; ordinal += 1) {
+        if (scores[ordinal]! > 0) continue
+        const entry = entries[ordinal]!
+        const score = scoreDoc(entry.doc, entry.scope, {
+          bm25Norm: 0,
+          now,
+          halfLifeDays: this.config.decayHalfLifeDays,
+          currentProjectKey
+        })
+        offer(0, score, entry)
+      }
+    }
+    // 只对排名头部去重并做多样性选择；这样即使某个作用域里有几万条记忆，
+    // 近似重复检查的代价仍是有界的。
     const pool: ScoredMemory[] = top.map((item) => ({
       record: partialRecord(item.doc, item.scopeKey),
       bm25: item.bm25,
@@ -745,18 +1018,105 @@ export class MemoryStore {
       updatedAt: item.record.updatedAt,
       pinned: item.record.pinned
     }))
-    void this.audit.append({
-      ts: this.now(),
-      event: 'search',
-      actor: options.actor ?? 'model',
-      sessionId: options.sessionId,
-      queryHash: sha256(options.query),
-      resultIds: hits.map((hit) => hit.id)
-    })
+    if (options.audit !== false) {
+      void this.audit.append({
+        ts: this.now(),
+        event: 'search',
+        actor: options.actor ?? 'model',
+        sessionId: options.sessionId,
+        queryHash: sha256(options.query),
+        resultIds: hits.map((hit) => hit.id)
+      })
+    }
     return hits
   }
 
-  /** List summaries for debugging/panel views. */
+  private async searchSqlite(options: MemorySearchOptions): Promise<MemorySearchHit[]> {
+    const scopes = this.searchScopes(options)
+    if (scopes.length === 0) return []
+    for (const scope of scopes) {
+      const handle = this.sqliteFor(scope)
+      if (!(await handle.exists()) || (await handle.isEmpty())) {
+        await this.withScopeLock(scope, () => this.getSqliteScopeIndex(scope, { refresh: true }))
+      }
+    }
+    const now = this.now()
+    const currentProjectKey = options.projectScope?.type === 'project' ? options.projectScope.key : undefined
+    const limit = Math.min(Math.max(1, options.limit ?? this.config.maxSearchResults), 20)
+    const candidates: Array<{ doc: IndexedDoc; scopeKey: string; bm25: number }> = []
+    for (const scope of scopes) {
+      const handle = this.sqliteFor(scope)
+      const hits = await handle.search(options.query, {
+        limit: Math.max(200, limit * 20),
+        includeDisputed: options.includeDisputed === true,
+        kinds: options.kinds,
+        now
+      })
+      for (const hit of hits) {
+        if (!this.isDocSearchable(hit.doc, options, now)) continue
+        candidates.push({ doc: hit.doc, scopeKey: hit.scopeKey, bm25: hit.bm25 })
+      }
+    }
+    if (candidates.length === 0) return []
+    if (options.includeMetadataFallback !== false && candidates.length < 40) {
+      const seen = new Set(candidates.map((candidate) => candidate.doc.id))
+      for (const scope of scopes) {
+        if (candidates.length >= 40) break
+        const docs = await this.sqliteFor(scope).allDocs()
+        for (const doc of docs) {
+          if (candidates.length >= 40) break
+          if (seen.has(doc.id) || !this.isDocSearchable(doc, options, now)) continue
+          seen.add(doc.id)
+          candidates.push({ doc, scopeKey: scopeKey(scope), bm25: 0 })
+        }
+      }
+    }
+    let maxBm25 = 0
+    for (const candidate of candidates) if (candidate.bm25 > maxBm25) maxBm25 = candidate.bm25
+    const scored = candidates.map((candidate) => {
+      const record = partialRecord(candidate.doc, candidate.scopeKey)
+      return {
+        record,
+        bm25: candidate.bm25,
+        score: scoreDoc(candidate.doc, record.scope, {
+          bm25Norm: maxBm25 > 0 ? candidate.bm25 / maxBm25 : 0,
+          now,
+          halfLifeDays: this.config.decayHalfLifeDays,
+          currentProjectKey
+        })
+      } satisfies ScoredMemory
+    })
+    scored.sort(
+      (a, b) => b.score - a.score || b.record.updatedAt - a.record.updatedAt || a.record.id.localeCompare(b.record.id)
+    )
+    const deduped = dedupeCandidates(scored.slice(0, 40))
+    const selected = mmrSelect(deduped.slice(0, 20), limit)
+    const hits: MemorySearchHit[] = selected.map((item) => ({
+      id: item.record.id,
+      slug: item.record.slug,
+      kind: item.record.kind,
+      title: item.record.title,
+      summary: item.record.summary,
+      trust: item.record.trust,
+      score: Number(item.score.toFixed(6)),
+      scope: item.record.scope,
+      updatedAt: item.record.updatedAt,
+      pinned: item.record.pinned
+    }))
+    if (options.audit !== false) {
+      void this.audit.append({
+        ts: this.now(),
+        event: 'search',
+        actor: options.actor ?? 'model',
+        sessionId: options.sessionId,
+        queryHash: sha256(options.query),
+        resultIds: hits.map((hit) => hit.id)
+      })
+    }
+    return hits
+  }
+
+  /** 列出摘要，供调试和面板视图使用。 */
   async list(options: MemoryListOptions): Promise<Array<IndexedDoc & { scope: string }>> {
     const scopes = this.searchScopes({
       query: '',
@@ -784,14 +1144,23 @@ export class MemoryStore {
     return docs.slice(0, limit)
   }
 
-  /** Everything the review queue needs for one project. */
-  async review(projectScope?: MemoryScope): Promise<{
+  /** 某个项目的评审队列所需的全部内容。 */
+  async review(
+    projectScope?: MemoryScope,
+    scope: 'user' | 'project' | 'all' = 'project'
+  ): Promise<{
     candidates: IndexedDoc[]
     conflicts: IndexedDoc[]
     stale: IndexedDoc[]
     expired: IndexedDoc[]
   }> {
-    const scopes = this.scopesToSearch({ projectScope, allProjects: projectScope === undefined })
+    const scopes =
+      scope === 'all'
+        ? this.allScopes()
+        : this.scopesToSearch({
+            projectScope,
+            scope: scope === 'user' ? { type: 'user' } : undefined
+          })
     const now = this.now()
     const candidates: IndexedDoc[] = []
     const conflicts: IndexedDoc[] = []
@@ -811,7 +1180,7 @@ export class MemoryStore {
     return { candidates, conflicts, stale, expired }
   }
 
-  /** Aggregated counts for the panel. */
+  /** 供面板使用的聚合计数。 */
   async stats(projectScope?: MemoryScope): Promise<{
     scopes: Array<{
       scope: string
@@ -848,13 +1217,13 @@ export class MemoryStore {
     return { scopes: out, audit: { total: events.length, byEvent } }
   }
 
-  /** Read all records of a scope from disk (full bodies). */
+  /** 从磁盘读取某个作用域的全部记录（含完整正文）。 */
   async recordsOf(scope: MemoryScope): Promise<{ records: MemoryRecord[]; malformed: MalformedFile[] }> {
     const { records, malformed } = await this.parseSourceFiles(scope, await this.readSourceFiles(scope))
     return { records, malformed }
   }
 
-  /** All records for the core layer: user plus the current project. */
+  /** 核心层需要的全部记录：用户作用域加上当前项目。 */
   async coreRecords(projectScope?: MemoryScope, options: { validate?: boolean } = {}): Promise<MemoryRecord[]> {
     const scopes = this.scopesToSearch({ projectScope })
     const out: MemoryRecord[] = []
@@ -865,7 +1234,7 @@ export class MemoryStore {
     return out
   }
 
-  /** Import records into a scope, always as candidates. */
+  /** 把记录导入某个作用域，一律作为 candidate。 */
   async importRecords(
     scope: MemoryScope,
     incoming: readonly Partial<MemoryRecord>[],
@@ -896,19 +1265,22 @@ export class MemoryStore {
       const id =
         requestedId !== undefined && isUlid(requestedId) && !ids.has(requestedId) ? requestedId : undefined
       try {
-        const result = await this.write({
-          id,
-          slug,
-          kind: isKind(item.kind) ? item.kind : 'fact',
-          title: item.title,
-          summary: item.summary,
-          body: item.body ?? '',
-          tags: item.tags,
-          importance: item.importance,
-          scope,
-          source: item.source,
-          evidence: item.evidence?.quote
-        })
+        const result = await this.write(
+          {
+            id,
+            slug,
+            kind: isKind(item.kind) ? item.kind : 'fact',
+            title: item.title,
+            summary: item.summary,
+            body: item.body ?? '',
+            tags: item.tags,
+            importance: item.importance,
+            scope,
+            source: item.source,
+            evidence: item.evidence?.quote
+          },
+          { actor: 'user', allowCreateWithId: true }
+        )
         imported.push(result.record.id)
         slugs.add(slug)
         ids.add(result.record.id)
@@ -927,7 +1299,7 @@ export class MemoryStore {
     return { imported, skipped }
   }
 
-  /** Export one scope as markdown files, an AGENTS.md fragment, or JSON. */
+  /** 把一个作用域导出为 Markdown 文件、AGENTS.md 片段或 JSON。 */
   async exportScope(
     scope: MemoryScope,
     format: 'md' | 'agents' | 'json'
@@ -971,7 +1343,7 @@ export class MemoryStore {
     return { format, content: lines.join('\n') }
   }
 
-  /** Run consistency checks without modifying anything. */
+  /** 在不修改任何内容的前提下执行一致性检查。 */
   async doctor(projectScope?: MemoryScope): Promise<{ findings: DoctorFinding[]; checked: number }> {
     const scopes = this.scopesToSearch({ projectScope, allProjects: projectScope === undefined })
     const findings: DoctorFinding[] = []
@@ -1057,8 +1429,87 @@ export class MemoryStore {
     return { findings, checked }
   }
 
+  /**
+   * 扫描历史数据中的疑似冲突，并可选地补写双向 conflictOf。
+   * 使用 summary token 倒排做候选对，避免对 10k 条记录做完整 O(n²)。
+   */
+  async scanConflicts(
+    scope?: MemoryScope,
+    options: { mark?: boolean } = {}
+  ): Promise<{ scanned: number; pairs: Array<{ a: string; b: string; scope: string }>; marked: number }> {
+    const scopes = scope !== undefined ? [scope] : this.allScopes()
+    let scanned = 0
+    let marked = 0
+    const pairs: Array<{ a: string; b: string; scope: string }> = []
+
+    for (const current of scopes) {
+      await this.withScopeLock(current, async () => {
+        const index = await this.getScopeIndex(current, { refresh: true })
+        scanned += index.docs.size
+        const byKind = new Map<string, IndexedDoc[]>()
+        for (const doc of index.docs.values()) {
+          if (doc.muted || doc.trust === 'superseded') continue
+          const list = byKind.get(doc.kind) ?? []
+          list.push(doc)
+          byKind.set(doc.kind, list)
+        }
+        const seen = new Set<string>()
+        for (const docs of byKind.values()) {
+          const byToken = new Map<string, IndexedDoc[]>()
+          for (const doc of docs) {
+            for (const term of new Set(tokenize(doc.summary))) {
+              const bucket = byToken.get(term) ?? []
+              bucket.push(doc)
+              byToken.set(term, bucket)
+            }
+          }
+          for (const bucket of byToken.values()) {
+            // 常见词桶过大，跳过；稀有词桶足以覆盖大多数冲突。
+            if (bucket.length < 2 || bucket.length > 300) continue
+            for (let i = 0; i < bucket.length; i += 1) {
+              for (let j = i + 1; j < bucket.length; j += 1) {
+                const a = bucket[i]!
+                const b = bucket[j]!
+                if (!summariesConflict(a.summary, b.summary)) continue
+                const key = a.id < b.id ? `${a.id}\u0000${b.id}` : `${b.id}\u0000${a.id}`
+                if (seen.has(key)) continue
+                seen.add(key)
+                pairs.push({ a: a.id, b: b.id, scope: scopeKey(current) })
+              }
+            }
+          }
+        }
+
+        if (options.mark !== true) return
+        for (const pair of pairs.filter((item) => item.scope === scopeKey(current))) {
+          const a = await this.readInScope(pair.a, current)
+          const b = await this.readInScope(pair.b, current)
+          if (a === undefined || b === undefined) continue
+          const aConf = new Set(a.conflictOf ?? [])
+          const bConf = new Set(b.conflictOf ?? [])
+          if (aConf.has(b.id) && bConf.has(a.id)) continue
+          aConf.add(b.id)
+          bConf.add(a.id)
+          a.conflictOf = [...aConf]
+          b.conflictOf = [...bConf]
+          const aFile = this.findFile(current, a.id)
+          const bFile = this.findFile(current, b.id)
+          if (aFile === undefined || bFile === undefined) continue
+          await writeFileAtomic(aFile, serializeMemoryFile(a), { mode: 0o600, dirMode: 0o700 })
+          await writeFileAtomic(bFile, serializeMemoryFile(b), { mode: 0o600, dirMode: 0o700 })
+          marked += 1
+        }
+        if (marked > 0) {
+          this.invalidateScope(current)
+          await this.getScopeIndex(current, { refresh: true })
+        }
+      })
+    }
+    return { scanned, pairs, marked }
+  }
+
   // -------------------------------------------------------------------------
-  // Internals
+  // 内部实现
   // -------------------------------------------------------------------------
 
   private redactOptions(): { redactPhoneAndId: boolean } {
@@ -1106,10 +1557,40 @@ export class MemoryStore {
     const out: string[] = []
     for (const doc of index.docs.values()) {
       if (doc.id === record.id) continue
+      if (doc.muted || doc.trust === 'superseded') continue
       if (doc.kind !== record.kind) continue
       if (summariesConflict(doc.summary, record.summary)) out.push(doc.id)
     }
     return out
+  }
+
+  /**
+   * 同步双向冲突标记。`previous` 是本条修改前的冲突集合，`next` 是修改后的集合；
+   * 旧冲突被解除时，同时从对方记录中移除本条 ID。
+   */
+  private async syncConflictMarkers(
+    scope: MemoryScope,
+    id: string,
+    previous: readonly string[],
+    next: readonly string[]
+  ): Promise<void> {
+    const nextSet = new Set(next)
+    const affected = new Set([...previous, ...next])
+    for (const otherId of affected) {
+      if (otherId === id) continue
+      const file = this.findFile(scope, otherId)
+      if (file === undefined) continue
+      const other = await this.readInScope(otherId, scope)
+      if (other === undefined) continue
+      const current = new Set(other.conflictOf ?? [])
+      const before = current.size
+      if (nextSet.has(otherId)) current.add(id)
+      else current.delete(id)
+      if (current.size === before && (current.has(id) === nextSet.has(otherId))) continue
+      if (current.size > 0) other.conflictOf = [...current]
+      else delete other.conflictOf
+      await writeFileAtomic(file, serializeMemoryFile(other), { mode: 0o600, dirMode: 0o700 })
+    }
   }
 
   private findFile(scope: MemoryScope, id: string): string | undefined {
@@ -1147,7 +1628,7 @@ export class MemoryStore {
     if (id === undefined) return undefined
     let file = this.findFile(scope, id)
     if (file === undefined && isUlid(candidateId)) {
-      // The index may be newer than a hand-renamed file.
+      // 索引可能比手工改名的文件更新。
       const index = await this.getScopeIndex(scope)
       const doc = index.docs.get(id)
       if (doc !== undefined) file = join(memoriesDir(this.root, scope), `${doc.id}.md`)
@@ -1176,10 +1657,14 @@ export class MemoryStore {
       change(record)
       const file = this.findFile(located.scope, record.id) ?? located.file
       await writeFileAtomic(file, serializeMemoryFile(record), { mode: 0o600, dirMode: 0o700 })
-      this.invalidateScope(located.scope)
       try {
-        const next = await this.getScopeIndex(located.scope, { refresh: true })
-        await this.persistIndex(located.scope, next)
+        if (this.useSqlite()) {
+          this.invalidateScope(located.scope)
+          const next = await this.getScopeIndex(located.scope)
+          await this.persistIndex(located.scope, next)
+        } else {
+          await this.updateIndexAfterWrite(located.scope, record)
+        }
       } catch (error) {
         this.warn(`index refresh after update failed: ${String(error)}`)
       }
@@ -1204,7 +1689,7 @@ export class MemoryStore {
     if (wantProjects) {
       if (options.projectScope?.type === 'project') {
         out.push(options.projectScope)
-        if (options.scope === 'all') {
+        if (options.scope === 'all' && options.includeOtherProjects !== false) {
           for (const key of listProjectKeys(this.root)) {
             if (key !== options.projectScope.key) out.push({ type: 'project', key })
           }
@@ -1325,7 +1810,7 @@ export class MemoryStore {
       }
       let record = parsed.record
       if (parsed.generatedId && isUlid(source.filenameId)) {
-        // A hand-written file may omit the id; the ULID filename is the identity.
+        // 手写的文件可能没有 id；此时 ULID 文件名就是它的身份标识。
         record.id = source.filenameId
         parsed.needsWrite = true
       }
@@ -1386,13 +1871,108 @@ export class MemoryStore {
     }
   }
 
-  private async persistIndex(scope: MemoryScope, index: ScopeIndex): Promise<void> {
-    const dir = scopeDir(this.root, scope)
-    const json = `${JSON.stringify(serializeScopeIndex(index), null, 2)}\n`
-    try {
-      await writeFileAtomic(join(dir, 'index.json'), json, { mode: 0o600, dirMode: 0o700 })
-    } catch (error) {
-      this.warn(`index.json write failed: ${String(error)}`)
+  private removeIndexPostings(index: ScopeIndex, id: string): void {
+    for (const [term, posting] of index.postings) {
+      if (!posting.delete(id)) continue
+      if (posting.size === 0) index.postings.delete(term)
+    }
+  }
+
+  private applyIndexRecord(index: ScopeIndex, record: MemoryRecord): void {
+    this.removeIndexPostings(index, record.id)
+    const terms = indexRecord(record)
+    index.docs.set(record.id, toIndexedDoc(record, terms.length))
+    for (const [term, tf] of terms.terms) {
+      let posting = index.postings.get(term)
+      if (posting === undefined) {
+        posting = new Map<string, number>()
+        index.postings.set(term, posting)
+      }
+      posting.set(record.id, tf)
+    }
+    const at = index.records.findIndex((item) => item.id === record.id)
+    if (at >= 0) index.records[at] = record
+    else index.records.push(record)
+    index.hydrated = true
+  }
+
+  private statSignatureOfFiles(files: Map<string, SourceFileEntry>): string {
+    return computeStatSignature(
+      [...files.values()].map((entry) => ({
+        file: entry.id,
+        filenameId: entry.id,
+        size: entry.size,
+        mtimeMs: entry.mtimeMs
+      }))
+    )
+  }
+
+  /**
+   * 写入单条 Markdown 后增量更新 JSON 索引；不再重新解析整个作用域。
+   * 没有文件指纹（旧 index.json）时回退一次全量重建。
+   */
+  private async updateIndexAfterWrite(scope: MemoryScope, record: MemoryRecord): Promise<void> {
+    const key = scopeKey(scope)
+    let index = this.cache.get(key)
+    if (index === undefined) index = await this.getScopeIndex(scope)
+    if (index.files === undefined) {
+      index = await this.getScopeIndex(scope, { refresh: true })
+    }
+    if (index.files === undefined) return
+    const file = this.findFile(scope, record.id)
+    if (file === undefined) {
+      this.invalidateScope(scope)
+      return
+    }
+    const stat = await fs.stat(file)
+    index.files.set(record.id, {
+      id: record.id,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      contentHash: contentHashOf(serializeMemoryFile(record))
+    })
+    this.applyIndexRecord(index, record)
+    index.sourceHash = computeSourceHash([...index.files.values()])
+    index.builtAt = Date.now()
+    index.version = (this.version += 1)
+    await this.persistIndex(scope, index)
+    this.meta.set(key, {
+      statSignature: this.statSignatureOfFiles(index.files),
+      indexMtimeMs: await this.indexJsonMtime(scope),
+      checkedAt: Date.now()
+    })
+  }
+
+  private async removeIndexRecord(scope: MemoryScope, id: string): Promise<void> {
+    const key = scopeKey(scope)
+    const index = this.cache.get(key)
+    if (index === undefined || index.files === undefined) {
+      this.invalidateScope(scope)
+      return
+    }
+    this.removeIndexPostings(index, id)
+    index.docs.delete(id)
+    index.records = index.records.filter((record) => record.id !== id)
+    index.files.delete(id)
+    index.sourceHash = computeSourceHash([...index.files.values()])
+    index.builtAt = Date.now()
+    index.version = (this.version += 1)
+    await this.persistIndex(scope, index)
+    this.meta.set(key, {
+      statSignature: this.statSignatureOfFiles(index.files),
+      indexMtimeMs: await this.indexJsonMtime(scope),
+      checkedAt: Date.now()
+    })
+  }
+
+  private async persistIndex(scope: MemoryScope, index: ScopeIndex): Promise<void> {    const dir = scopeDir(this.root, scope)
+    if (index.backend !== 'sqlite') {
+      const json = `${JSON.stringify(serializeScopeIndex(index), null, 2)}\n`
+      try {
+        await writeFileAtomic(join(dir, 'index.json'), json, { mode: 0o600, dirMode: 0o700 })
+      } catch (error) {
+        this.warn(`index.json write failed: ${String(error)}`)
+      }
     }
     try {
       const markdown = renderIndexMarkdown(index.scopeKey, [...index.docs.values()], index.builtAt)

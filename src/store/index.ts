@@ -1,9 +1,8 @@
 /**
- * Derived index: BM25 postings plus the metadata the core layer needs.
+ * 派生索引：BM25 postings，以及核心层所需的元数据。
  *
- * `index.json` is a cache and can be deleted at any time. Its `sourceHash`
- * covers the id, size, mtime and content hash of every memory file; a mismatch
- * rebuilds from Markdown, which remains the source of truth.
+ * `index.json` 只是一份缓存，随时可以删除。它的 `sourceHash` 覆盖每个记忆文件的 id、
+ * 大小、mtime 和内容哈希；一旦不匹配，就从 Markdown 重建，Markdown 始终是唯一事实来源。
  */
 import { createHash } from 'node:crypto'
 import type { MemoryKind, MemoryRecord, MemoryScope, TrustState } from '../types.ts'
@@ -12,7 +11,7 @@ import { indexRecord } from '../retrieval/bm25.ts'
 import { importanceNorm, KIND_WEIGHT, TRUST_WEIGHT, SCORE_WEIGHTS } from '../retrieval/score.ts'
 import { formatBytes } from './sanitize.ts'
 
-/** Indexed projection of one record (no body). */
+/** 单条记录的索引投影（不含正文）。 */
 export interface IndexedDoc {
   id: string
   slug: string
@@ -30,36 +29,40 @@ export interface IndexedDoc {
   pinned: boolean
   muted: boolean
   conflictOf?: string[]
-  /** Precomputed trust + importance + kind contribution. */
+  /** 预计算的 trust + importance + kind 贡献。 */
   priorScore?: number
-  /** Weighted token length for BM25. */
+  /** BM25 使用的加权 token 长度。 */
   length: number
 }
 
-/** One skipped file. */
+/** 一个被跳过的文件。 */
 export interface MalformedFile {
   file: string
   id?: string
   message: string
 }
 
-/** In-memory index for one scope. */
+/** 某个作用域的内存索引。 */
 export interface ScopeIndex {
   scopeKey: string
   builtAt: number
   sourceHash: string
   docs: Map<string, IndexedDoc>
   postings: Map<string, Map<string, number>>
-  /** Records for this scope; body may be empty when hydrated from index.json. */
+  /** 该作用域的记录；从 index.json 还原时正文可能为空。 */
   records: MemoryRecord[]
-  /** Monotonic cache version used by the core cache. */
+  /** 供核心缓存使用的单调递增版本号。 */
   version: number
   malformed: MalformedFile[]
-  /** Whether records came from parsed files (vs. a validated index.json). */
+  /** 记录是否来自解析文件（而不是经过校验的 index.json）。 */
   hydrated: boolean
+  /** 派生索引后端；缺省为 JSON。 */
+  backend?: 'json' | 'sqlite'
+  /** 每个源文件的指纹；用于 JSON 后端的增量 sourceHash 更新。 */
+  files?: Map<string, SourceFileEntry>
 }
 
-/** Source fingerprint entry for one file. */
+/** 单个文件的来源指纹条目。 */
 export interface SourceFileEntry {
   id: string
   size: number
@@ -67,7 +70,7 @@ export interface SourceFileEntry {
   contentHash: string
 }
 
-/** Stable hash over all source files (order independent). */
+/** 覆盖所有源文件的稳定哈希（与顺序无关）。 */
 export function computeSourceHash(entries: readonly SourceFileEntry[]): string {
   const lines = entries
     .map((entry) => `${entry.id}\u0000${entry.size}\u0000${Math.trunc(entry.mtimeMs)}\u0000${entry.contentHash}`)
@@ -76,7 +79,7 @@ export function computeSourceHash(entries: readonly SourceFileEntry[]): string {
   return `sha256:${createHash('sha256').update(lines).digest('hex')}`
 }
 
-/** Project one record into the searchable metadata shape. */
+/** 把一条记录投影成可搜索的元数据形态。 */
 export function toIndexedDoc(record: MemoryRecord, length: number): IndexedDoc {
   return {
     id: record.id,
@@ -103,13 +106,14 @@ export function toIndexedDoc(record: MemoryRecord, length: number): IndexedDoc {
   }
 }
 
-/** Build an index from records. Pure function: same input, same output. */
+/** 从记录构建索引。纯函数：同样的输入得到同样的输出。 */
 export function buildScopeIndex(
   records: readonly MemoryRecord[],
   scopeKey: string,
   sourceHash: string,
   version: number,
-  malformed: MalformedFile[] = []
+  malformed: MalformedFile[] = [],
+  files?: Map<string, SourceFileEntry>
 ): ScopeIndex {
   const docs = new Map<string, IndexedDoc>()
   const postings = new Map<string, Map<string, number>>()
@@ -134,14 +138,12 @@ export function buildScopeIndex(
     records: [...records],
     version,
     malformed,
-    hydrated: true
+    hydrated: true,
+    files
   }
 }
 
-// Imported through one binding to keep the pure-index module free of a cycle
-// with retrieval/score.
-
-/** JSON shape persisted as `index.json`. */
+/** 持久化为 `index.json` 的 JSON 形态。 */
 export interface IndexJson {
   schemaVersion: 1
   scope: string
@@ -150,9 +152,10 @@ export interface IndexJson {
   docCount: number
   docs: Record<string, IndexedDoc>
   postings: Record<string, Record<string, number>>
+  files?: Record<string, SourceFileEntry>
 }
 
-/** Serialize an index to the on-disk JSON shape. */
+/** 把索引序列化为磁盘上的 JSON 形态。 */
 export function serializeScopeIndex(index: ScopeIndex): IndexJson {
   const docs: Record<string, IndexedDoc> = {}
   for (const [id, doc] of index.docs) docs[id] = doc
@@ -169,11 +172,14 @@ export function serializeScopeIndex(index: ScopeIndex): IndexJson {
     sourceHash: index.sourceHash,
     docCount: index.docs.size,
     docs,
-    postings
+    postings,
+    ...(index.files !== undefined && index.files.size > 0
+      ? { files: Object.fromEntries(index.files) }
+      : {})
   }
 }
 
-/** Parse a persisted index, rejecting a mismatched scope or schema. */
+/** 解析已持久化的索引；作用域或 schema 不匹配时拒绝。 */
 export function parseScopeIndexJson(
   text: string,
   scopeKey: string,
@@ -211,6 +217,20 @@ export function parseScopeIndexJson(
     }
     postings.set(term, inner)
   }
+  const files = new Map<string, SourceFileEntry>()
+  if (json.files !== null && typeof json.files === 'object') {
+    for (const [id, raw] of Object.entries(json.files as Record<string, unknown>)) {
+      if (raw === null || typeof raw !== 'object') continue
+      const entry = raw as Partial<SourceFileEntry>
+      if (
+        typeof entry.size === 'number' &&
+        typeof entry.mtimeMs === 'number' &&
+        typeof entry.contentHash === 'string'
+      ) {
+        files.set(id, { id, size: entry.size, mtimeMs: entry.mtimeMs, contentHash: entry.contentHash })
+      }
+    }
+  }
   return {
     scopeKey,
     builtAt: typeof json.builtAt === 'number' ? json.builtAt : Date.now(),
@@ -220,12 +240,13 @@ export function parseScopeIndexJson(
     records,
     version,
     malformed: [],
-    hydrated: false
+    hydrated: false,
+    ...(files.size > 0 ? { files } : {})
   }
 }
 
-/** Reconstruct a body-less record from an index entry. */
-function docToPartialRecord(doc: IndexedDoc, scope: MemoryScope): MemoryRecord {
+/** 从索引条目重建一条不含正文的记录。 */
+export function docToPartialRecord(doc: IndexedDoc, scope: MemoryScope): MemoryRecord {
   return {
     schemaVersion: 1,
     id: doc.id,
@@ -251,7 +272,7 @@ function docToPartialRecord(doc: IndexedDoc, scope: MemoryScope): MemoryRecord {
   }
 }
 
-/** Render a human-readable `index.md`. */
+/** 渲染人类可读的 `index.md`。 */
 export function renderIndexMarkdown(scopeKey: string, docs: readonly IndexedDoc[], updatedAt = Date.now()): string {
   const sorted = [...docs].sort((a, b) => b.updatedAt - a.updatedAt)
   const lines: string[] = [
@@ -271,12 +292,12 @@ export function renderIndexMarkdown(scopeKey: string, docs: readonly IndexedDoc[
   return lines.join('\n')
 }
 
-/** Compact byte estimate for a doc list, used by stats. */
+/** 估算文档列表的紧凑字节数，供统计使用。 */
 export function estimateDocsBytes(docs: readonly IndexedDoc[]): number {
   return docs.reduce((sum, doc) => sum + Buffer.byteLength(doc.summary, 'utf8'), 0)
 }
 
-/** Human summary line for stats. */
+/** 供统计使用的可读摘要行。 */
 export function summarizeIndex(index: ScopeIndex): string {
   return `${index.scopeKey}: ${index.docs.size} docs, ${index.postings.size} terms, ${formatBytes(estimateDocsBytes([...index.docs.values()]))}`
 }

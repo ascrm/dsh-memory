@@ -1,15 +1,14 @@
 /**
- * Core data model for dsh-memory.
+ * dsh-memory 的核心数据模型。
  *
- * A memory is a plain Markdown file with YAML frontmatter. The record below is
- * the in-memory projection; `rawFrontmatter` keeps user-authored unknown keys
- * so hand edits survive a round trip.
+ * 一条记忆就是一个带 YAML frontmatter 的普通 Markdown 文件。下面的记录是内存中的
+ * 投影；`rawFrontmatter` 保留用户自行编写的未知键，使手工编辑在往返读写后依然保留。
  */
 
-/** Format version written into every memory file and derived index. */
+/** 写入每个记忆文件和派生索引的格式版本。 */
 export const SCHEMA_VERSION = 1 as const
 
-/** Semantic category of a memory. */
+/** 记忆的语义类别。 */
 export type MemoryKind =
   | 'preference'
   | 'constraint'
@@ -18,7 +17,7 @@ export type MemoryKind =
   | 'artifact'
   | 'episode'
 
-/** All memory kinds, in the order used by tool schemas and UI filters. */
+/** 全部记忆类型，顺序与工具 schema 和 UI 过滤器一致。 */
 export const MEMORY_KINDS: readonly MemoryKind[] = [
   'preference',
   'constraint',
@@ -28,15 +27,15 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   'episode'
 ]
 
-/** Scope of a memory: global to the user, or one project key. */
+/** 记忆的作用域：用户全局，或某个项目键。 */
 export type MemoryScope =
   | { type: 'user' }
   | { type: 'project'; key: string }
 
-/** Trust lifecycle. Only a user may move a record to `verified`. */
+/** trust 生命周期。只有用户能把一条记录转为 `verified`。 */
 export type TrustState = 'candidate' | 'verified' | 'disputed' | 'superseded'
 
-/** All trust states. */
+/** 全部 trust 状态。 */
 export const TRUST_STATES: readonly TrustState[] = [
   'candidate',
   'verified',
@@ -44,7 +43,7 @@ export const TRUST_STATES: readonly TrustState[] = [
   'superseded'
 ]
 
-/** Provenance pointers for a memory. */
+/** 一条记忆的 provenance 指针。 */
 export interface MemorySource {
   sessionId?: string
   messageId?: string
@@ -54,34 +53,34 @@ export interface MemorySource {
   url?: string
 }
 
-/** A verbatim quote backing a memory. */
+/** 支撑某条记忆的原文引用。 */
 export interface MemoryEvidence {
-  /** Verbatim excerpt, at most 500 characters. */
+  /** 原文摘录，最多 500 个字符。 */
   quote: string
-  /** Optional fingerprint of the quote or its source. */
+  /** 引用原文或其来源的可选指纹。 */
   hash?: string
 }
 
-/** One persistent memory record. */
+/** 一条持久化记忆记录。 */
 export interface MemoryRecord {
   schemaVersion: typeof SCHEMA_VERSION
-  /** ULID primary key; never changes once created. */
+  /** ULID 主键；创建后永不改变。 */
   id: string
-  /** Kebab-case, unique within a scope. */
+  /** kebab-case 形式，在作用域内唯一。 */
   slug: string
   kind: MemoryKind
   scope: MemoryScope
-  /** Single-line title, at most 80 characters. */
+  /** 单行标题，最多 80 个字符。 */
   title: string
-  /** Single-line summary, at most 200 characters. */
+  /** 单行摘要，最多 200 个字符。 */
   summary: string
-  /** Markdown body, at most 8 KB by default. */
+  /** Markdown 正文，默认最多 8 KB。 */
   body: string
   tags: string[]
   source: MemorySource
   evidence?: MemoryEvidence
   trust: TrustState
-  /** 1–10. */
+  /** 取值为 1–10。 */
   importance: number
   createdAt: number
   updatedAt: number
@@ -95,21 +94,21 @@ export interface MemoryRecord {
   muted: boolean
   verifiedBy?: 'user'
   verifiedAt?: number
-  /** Incremented on every content change. */
+  /** 每次内容变更都会递增。 */
   revision: number
-  /** Unknown frontmatter keys, preserved on write. */
+  /** 未知的 frontmatter 键，写入时保留。 */
   rawFrontmatter?: Record<string, unknown>
 }
 
-/** A record plus its storage provenance. */
+/** 一条记录及其存储位置来源。 */
 export interface LocatedMemory {
   record: MemoryRecord
   scope: MemoryScope
-  /** Absolute path of the memory file. */
+  /** 记忆文件的绝对路径。 */
   file: string
 }
 
-/** Input accepted by {@link MemoryStore.write}. */
+/** {@link MemoryStore.write} 接受的输入。 */
 export interface MemoryWriteInput {
   id?: string
   slug?: string
@@ -125,16 +124,26 @@ export interface MemoryWriteInput {
   expiresAt?: number | null
 }
 
-/** Result of one write. */
+/** 一次写入的结果。 */
 export interface MemoryWriteResult {
   record: MemoryRecord
   operation: 'created' | 'updated'
   truncated: boolean
-  /** IDs of memories this write appears to conflict with. */
+  /** 与本次写入疑似冲突的记忆 ID。 */
   conflicts: string[]
 }
 
-/** One ranked search result. */
+/** 用户解决冲突时可提供的合并内容；未提供的字段沿用保留方。 */
+export interface MemoryMergeInput {
+  title?: string
+  summary?: string
+  body?: string
+  tags?: string[]
+  importance?: number
+  evidence?: string
+}
+
+/** 一条带排名的搜索结果。 */
 export interface MemorySearchHit {
   id: string
   slug: string
@@ -148,23 +157,29 @@ export interface MemorySearchHit {
   pinned: boolean
 }
 
-/** Options accepted by {@link MemoryStore.search}. */
+/** {@link MemoryStore.search} 接受的选项。 */
 export interface MemorySearchOptions {
   query: string
-  /** `all` searches every scope; the caller's current project still ranks higher. */
+  /** `all` 会搜索每个作用域；调用方当前所在的项目仍然排名更高。 */
   scope: 'user' | 'project' | 'all'
-  /** Project scope resolved from the owning agent; required unless only user scope is queried. */
+  /** 由所属 agent 解析出的项目作用域；除非只查询用户作用域，否则必填。 */
   projectScope?: MemoryScope
   kinds?: MemoryKind[]
   limit?: number
   includeDisputed?: boolean
-  /** Session id recorded in the audit event (never the query text). */
+  /** 记录在审计事件中的会话 id（绝不记录查询文本）。 */
   sessionId?: string
-  /** Who issued the search; defaults to `model`. */
+  /** 发起搜索的一方；默认为 `model`。 */
   actor?: 'model' | 'user'
+  /** 为 false 时，`all` 不包含当前项目之外的其他项目（per-turn recall 使用）。 */
+  includeOtherProjects?: boolean
+  /** 为 false 时不写 search 审计事件（recall 自己写 inject 审计）。 */
+  audit?: boolean
+  /** 为 false 时不使用元数据分补足关键词命中不足的候选（recall 使用）。 */
+  includeMetadataFallback?: boolean
 }
 
-/** Options accepted by {@link MemoryStore.list}. */
+/** {@link MemoryStore.list} 接受的选项。 */
 export interface MemoryListOptions {
   scope: 'user' | 'project' | 'all'
   projectScope?: MemoryScope
@@ -173,7 +188,7 @@ export interface MemoryListOptions {
   limit?: number
 }
 
-/** Doctor report entry. */
+/** doctor 报告条目。 */
 export interface DoctorFinding {
   level: 'error' | 'warn' | 'info'
   code: string
@@ -182,7 +197,7 @@ export interface DoctorFinding {
   message: string
 }
 
-/** Error codes defined by the design document. */
+/** 设计文档中定义的错误码。 */
 export type MemoryErrorCode =
   | 'INVALID_SLUG'
   | 'RESERVED_SLUG'
@@ -197,7 +212,7 @@ export type MemoryErrorCode =
   | 'INVALID_ARGUMENT'
   | 'IO_ERROR'
 
-/** A typed, model-safe failure. */
+/** 带类型、对模型安全的失败。 */
 export class MemoryError extends Error {
   readonly code: MemoryErrorCode
   readonly details?: Record<string, unknown>
@@ -210,14 +225,26 @@ export class MemoryError extends Error {
   }
 }
 
-/** Plugin configuration resolved from the profile patch. */
+/** 由 profile patch 解析出的插件配置。 */
 export interface MemoryConfig {
-  /** Root memory directory; defaults to `$DSH_HOME/memory`. */
+  /** 记忆根目录；默认为 `$DSH_HOME/memory`。 */
   memoryDir?: string
   maxCoreBytes: number
   maxCoreItems: number
   maxSearchResults: number
   maxBodyBytes: number
+  /** 是否根据当前用户消息做 per-turn recall 注入。 */
+  enableRecall: boolean
+  /** recall 段的字节预算。 */
+  recallMaxBytes: number
+  /** recall 段最多包含的记忆条数。 */
+  recallMaxItems: number
+  /** recall 是否包含未验证的 candidate。 */
+  recallIncludeCandidates: boolean
+  /** 冷索引导致检索超时后放弃本回合 recall 的毫秒数。 */
+  recallTimeoutMs: number
+  /** 派生索引后端：JSON 或可选 SQLite FTS5。 */
+  indexBackend: 'json' | 'sqlite'
   enableUserScope: boolean
   enableAutoCapture: boolean
   autoCaptureMaxTokens: number
@@ -230,7 +257,7 @@ export interface MemoryConfig {
   redactPhoneAndId: boolean
 }
 
-/** Default importance per kind (§4.2). */
+/** 各类型的默认 importance（§4.2）。 */
 export const DEFAULT_IMPORTANCE: Record<MemoryKind, number> = {
   preference: 8,
   constraint: 9,
@@ -240,14 +267,14 @@ export const DEFAULT_IMPORTANCE: Record<MemoryKind, number> = {
   episode: 4
 }
 
-/** Default scope per kind (§6.3). */
+/** 各类型的默认作用域（§6.3）。 */
 export function defaultScopeForKind(kind: MemoryKind): MemoryScope {
   if (kind === 'preference' || kind === 'artifact') return { type: 'user' }
   return { type: 'project', key: '' }
 }
 
-/** Kinds allowed at user scope (§6.3). */
+/** 用户作用域允许的类型（§6.3）。 */
 export const USER_SCOPE_KINDS: readonly MemoryKind[] = ['preference', 'artifact']
 
-/** Default TTL for episodes (§4.2). */
+/** episode 的默认 TTL（§4.2）。 */
 export const EPISODE_TTL_MS = 90 * 24 * 60 * 60 * 1000

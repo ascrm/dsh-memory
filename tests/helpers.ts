@@ -12,7 +12,7 @@ export interface StoreHarness {
   cleanup: () => Promise<void>
 }
 
-/** Create an isolated memory store in the OS temp directory. */
+/** 在操作系统临时目录中创建一个隔离的记忆存储。 */
 export async function createStore(
   overrides: Partial<MemoryConfig> = {},
   options: MemoryStoreOptions = {}
@@ -27,12 +27,13 @@ export async function createStore(
     store,
     cleanup: async () => {
       await store.audit.flush()
+      store.close()
       await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
     }
   }
 }
 
-/** Minimal fake context that records registrations and event handlers. */
+/** 记录注册项和事件处理器的最小伪造 context。 */
 export interface FakeContext {
   tools: { register: (definition: any) => () => void }
   systemPrompt: { section: (section: any) => () => void }
@@ -43,7 +44,7 @@ export interface FakeContext {
   logger: { warn: (...args: any[]) => void; debug: (...args: any[]) => void }
 }
 
-/** Build a fake Cordis context for plugin integration tests. */
+/** 为插件集成测试构建一个伪造的 Cordis context。 */
 export function createFakeContext(): FakeContext {
   const toolDefinitions = new Map<string, any>()
   const sections: any[] = []
@@ -85,21 +86,21 @@ export function createFakeContext(): FakeContext {
   } as unknown as FakeContext
 }
 
-/** Resolve a fake tool definition. */
+/** 取出一个假的工具定义。 */
 export function tool(context: FakeContext, name: string): any {
   const definition = context.toolDefinitions.get(name)
   if (definition === undefined) throw new Error(`tool ${name} not registered`)
   return definition
 }
 
-/** Emit one recorded event to all handlers. */
+/** 向所有处理器发送一个已记录的事件。 */
 export async function emit(context: FakeContext, name: string, ...args: any[]): Promise<void> {
   for (const handler of context.handlers.get(name) ?? []) {
     await handler(...args)
   }
 }
 
-/** Poll until `check` passes (for async warm-up paths). */
+/** 轮询直到 `check` 通过（用于异步预热路径）。 */
 export async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
   const started = Date.now()
   while (!check()) {

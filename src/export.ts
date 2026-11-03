@@ -1,8 +1,8 @@
 /**
- * Import/export helpers.
+ * 导入/导出辅助函数。
  *
- * Export never mutates the source. AGENTS.md output only includes verified
- * preference/constraint/decision summaries, never bodies.
+ * 导出永远不会改动源数据。AGENTS.md 的输出只包含已通过验证的
+ * preference/constraint/decision 摘要，绝不包含正文。
  */
 import { promises as fs } from 'node:fs'
 import { basename, join } from 'node:path'
@@ -11,7 +11,7 @@ import type { MemoryStore } from './store/store.ts'
 import { parseMemoryFile, serializeMemoryFile } from './store/parse.ts'
 import { singleLine } from './store/sanitize.ts'
 
-/** Render the AGENTS.md fragment for a set of records. */
+/** 为一组记录渲染 AGENTS.md 片段。 */
 export function renderAgentsFragment(records: readonly MemoryRecord[]): string {
   const relevant = records
     .filter(
@@ -29,12 +29,12 @@ export function renderAgentsFragment(records: readonly MemoryRecord[]): string {
   return lines.join('\n')
 }
 
-/** Export one scope. */
+/** 导出一个作用域。 */
 export async function exportScope(store: MemoryStore, scope: MemoryScope, format: 'md' | 'agents' | 'json') {
   return store.exportScope(scope, format)
 }
 
-/** Import Markdown files from a directory as candidates. */
+/** 从目录中导入 Markdown 文件，作为候选记忆。 */
 export async function importMarkdownDir(
   store: MemoryStore,
   scope: MemoryScope,
@@ -49,13 +49,13 @@ export async function importMarkdownDir(
       const text = await fs.readFile(file, 'utf8')
       records.push(parseMemoryFile(text, scope).record)
     } catch {
-      // Malformed import files are skipped; the caller reports the count.
+      // 格式错误的导入文件会被跳过，由调用方报告数量。
     }
   }
   return store.importRecords(scope, records)
 }
 
-/** Import one JSON backup. */
+/** 导入一份 JSON 备份。 */
 export async function importJsonFile(
   store: MemoryStore,
   scope: MemoryScope,
@@ -67,7 +67,7 @@ export async function importJsonFile(
   return store.importRecords(scope, parsed.memories as MemoryRecord[])
 }
 
-/** Serialize a record for a `md` export entry. */
+/** 为 `md` 导出条目序列化一条记录。 */
 export function exportRecordMarkdown(record: MemoryRecord): { name: string; content: string } {
   return { name: `${record.id}.md`, content: serializeMemoryFile(record) }
 }
