@@ -29,7 +29,7 @@ export const Config: z<MemoryConfig> = z.object({  memoryDir: z.string().descrip
   staleAfterDays: z.number().default(180).description('Age after which an unused memory is considered stale.'),
   decayHalfLifeDays: z.number().default(180).description('Recency half-life used by ranking.'),
   projectScope: z.string().default('git').description("Project identity: 'git' or 'path'."),
-  enablePanel: z.boolean().default(true).description('Register the HTTP panel API when connection is available.'),
+  enablePanel: z.boolean().default(true).description('Register the client JSON API when connection is available.'),
   redactPhoneAndId: z.boolean().default(false).description('Also redact phone numbers and Chinese ID numbers.')
 }) as unknown as z<MemoryConfig>
 

@@ -134,9 +134,9 @@ export function apply(ctx: Context, config: MemoryConfig): void {
         | undefined
       if (connection === undefined || typeof connection.fetch?.register !== 'function') return
       registerMemoryApi(connection, { store, config: merged, core })
-      ctx.logger.debug?.(`[dsh-memory] panel API registered for ${scopeKey({ type: 'user' })}`)
+      ctx.logger.debug?.(`[dsh-memory] client API registered for ${scopeKey({ type: 'user' })}`)
     } catch (error) {
-      ctx.logger.warn(`[dsh-memory] panel API unavailable: ${String(error)}`)
+      ctx.logger.warn(`[dsh-memory] client API unavailable: ${String(error)}`)
     }
   })
 

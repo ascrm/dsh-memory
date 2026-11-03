@@ -2,7 +2,7 @@
  * 面向模型的工具。
  *
  * `memory_write` 只能创建 candidate；验证、dispute 和 pin 都是仅限用户的操作，
- * 通过面板 API（以及无 CLI 的文件接口）暴露。破坏性的 `memory_forget(hard=true)`
+ * 通过侧边栏 API（以及无 CLI 的文件接口）暴露。破坏性的 `memory_forget(hard=true)`
  * 由 `index.ts` 中的 pre-execute 审批把关。
  */
 import type { Context } from '@deepseek-ai/cordis'

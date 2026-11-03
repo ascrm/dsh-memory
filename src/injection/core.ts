@@ -151,7 +151,7 @@ export class CoreCache {
     this.userPack = selectCore(records, this.config, Date.now())
   }
 
-  /** 当前的缓存条目（供面板统计）。 */
+  /** 当前的缓存条目（供侧边栏统计）。 */
   entry(sessionId: string): CacheEntry | undefined {
     return this.bySession.get(sessionId)
   }
@@ -226,7 +226,7 @@ export class CoreCache {
     await Promise.allSettled([...this.pending])
   }
 
-  /** 供面板使用的缓存诊断信息。 */
+  /** 供侧边栏使用的缓存诊断信息。 */
   stats(): Array<{ sessionId: string; scope: string; bytes: number; ids: string[] }> {
     return [...this.bySession.entries()].map(([sessionId, entry]) => ({
       sessionId,

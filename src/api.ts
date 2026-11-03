@@ -1,5 +1,5 @@
 /**
- * 可选的 HTTP 面板 API，注册在宿主的 `connection` 服务上。
+ * 侧边栏客户端使用的 JSON API，注册在宿主的 `connection` 服务上。
  *
  * 路由位于 dsh 的认证围栏之内（默认仅回环地址）。该 API 从不接受文件系统路径：项目
  * 文件始终由 `cwd` 查询参数/请求体字段推导，id 则由 store 校验。
@@ -13,7 +13,6 @@ import { scopeKey } from './store/paths.ts'
 import { sanitizeBody, sanitizeInjectionText, singleLine } from './store/sanitize.ts'
 import { detectSuspicious } from './store/sanitize.ts'
 import { selectCore } from './injection/core.ts'
-import { PANEL_HTML } from './panel.ts'
 
 interface PanelRoute {
   path: string
@@ -28,7 +27,7 @@ interface ConnectionLike {
   }
 }
 
-/** 面板 API 的依赖项。 */
+/** 侧边栏 API 的依赖项。 */
 export interface PanelDeps {
   store: MemoryStore
   config: MemoryConfig
@@ -139,7 +138,7 @@ function resolveScope(
   return scope
 }
 
-/** 在 connection 服务上注册面板 API。 */
+/** 在 connection 服务上注册侧边栏 API。 */
 export function registerMemoryApi(connection: ConnectionLike, deps: PanelDeps): void {
   const { store, config, core } = deps
 
@@ -554,22 +553,6 @@ export function registerMemoryApi(connection: ConnectionLike, deps: PanelDeps): 
         return failure(error)
       }
     }
-  })
-
-  connection.fetch.register({
-    path: `${BASE}/panel`,
-    methods: ['GET'],
-    requestBody: 'buffered',
-    fetch: async () =>
-      new Response(PANEL_HTML, {
-        status: 200,
-        headers: {
-          'content-type': 'text/html; charset=utf-8',
-          'cache-control': 'no-store',
-          'content-security-policy':
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
-        }
-      })
   })
 
   connection.fetch.register({

@@ -87,14 +87,9 @@ describe('panel API', () => {
     expect(afterMute.entries).toHaveLength(0)
   })
 
-  it('serves the minimal panel page', async () => {
+  it('scans historical conflicts through the panel API', async () => {
     harness = await createStore()
     const api = makeApi()
-    const response = await api.call('/panel')
-    expect(response.status).toBe(200)
-    expect(response.headers.get('content-type')).toContain('text/html')
-    expect(response.headers.get('content-security-policy')).toContain("default-src 'none'")
-    expect(await response.text()).toContain('dsh-memory')
     const scan = await api.call('/scan-conflicts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

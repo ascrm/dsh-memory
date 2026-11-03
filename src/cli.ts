@@ -2,7 +2,7 @@
 /**
  * dsh-memory 的命令行工具。
  *
- * 面向没有面板客户端的用户：直接操作同一个 $DSH_HOME/memory 存储。
+ * 面向命令行和脚本用户：直接操作同一个 $DSH_HOME/memory 存储。
  * 所有写操作仍然走 MemoryStore，因此锁、原子写、审计和信任规则与插件完全一致。
  */
 import { promises as fs, realpathSync } from 'node:fs'

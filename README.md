@@ -21,7 +21,7 @@
 - [配置](#配置)
 - [模型工具](#模型工具)
 - [命令行](#命令行)
-- [面板与 HTTP API](#面板与-http-api)
+- [侧边栏与 HTTP API](#侧边栏与-http-api)
 - [存储布局](#存储布局)
 - [信任与冲突](#信任与冲突)
 - [检索与 recall](#检索与-recall)
@@ -54,7 +54,7 @@
 | 信任生命周期 | `candidate` / `verified` / `disputed` / `superseded` |
 | 冲突处理 | 双向 `conflictOf`，review queue 支持 keep / merge / both |
 | 索引后端 | JSON（默认）或 SQLite FTS5（可选） |
-| 用户界面 | `dsh-memory` CLI、最小 HTTP 面板、JSON API |
+| 用户界面 | DSH 右侧边栏、`dsh-memory` CLI、JSON API |
 | 自动捕获 | 可选，agent 结束时提取候选记忆 |
 | 安全 | 提示词框架转义、单行化、密钥脱敏、原子写、文件锁 |
 
@@ -130,11 +130,7 @@ dsh plugin add @ascrm88/dsh-memory
    ```
 
 4. 下一次会话中，`verified` 记忆会进入核心层或在相关请求中进入 recall。
-5. 需要人工浏览时，打开：
-
-   ```text
-   /api/memory/panel
-   ```
+5. 打开 DSH 右侧边栏，点击“记忆”卡片；也可以在边栏的 `+` 菜单中选择“记忆”。
 
 ## 配置
 
@@ -162,7 +158,7 @@ dsh plugin add @ascrm88/dsh-memory
 | `staleAfterDays` | `180` | 未使用多久视为陈旧（`0` 关闭） |
 | `decayHalfLifeDays` | `180` | 排序衰减半衰期 |
 | `projectScope` | `git` | 项目身份：`git` 或 `path` |
-| `enablePanel` | `true` | `connection` 可用时注册 HTTP API |
+| `enablePanel` | `true` | `connection` 可用时注册侧边栏客户端 API |
 | `redactPhoneAndId` | `false` | 额外脱敏手机号/身份证号 |
 
 ## 模型工具
@@ -176,7 +172,7 @@ dsh plugin add @ascrm88/dsh-memory
 | `memory_list` | 只读摘要列表（调试用） |
 | `memory_refresh` | 手改 Markdown 后重建派生索引 |
 
-模型不能设置 `trust`、`pinned`、`verifiedBy`，也没有 `memory_verify` 工具。验证、争议、恢复、置顶等操作仅通过 CLI 或面板 API 暴露给用户。
+模型不能设置 `trust`、`pinned`、`verifiedBy`，也没有 `memory_verify` 工具。验证、争议、恢复、置顶等操作仅通过 CLI 或右侧边栏暴露给用户。
 
 ## 命令行
 
@@ -216,9 +212,9 @@ dsh-memory import ./memories --scope user
 - `forget --hard` 在 CLI 中直接删除，不触发 dsh 审批弹窗；执行前请确认。
 - 从源码运行：`pnpm build && node lib/cli.js ...`。
 
-## 面板与 HTTP API
+## 侧边栏与 HTTP API
 
-`connection` 服务可用且 `enablePanel=true` 时注册：
+侧边栏面板由 [src/client.js](src/client.js) 提供，作为 DSH 右侧边栏的“记忆”tab 注册；数据通过下面的 JSON API 获取。`connection` 服务可用且 `enablePanel=true` 时注册 API：
 
 | 路径 | 方法 | 说明 |
 |---|---|---|
@@ -242,11 +238,12 @@ dsh-memory import ./memories --scope user
 | `/api/memory/refresh` | POST | 重建索引 |
 | `/api/memory/doctor` | GET | 一致性检查 |
 | `/api/memory/export` | GET | `md` / `agents` / `json` |
-| `/api/memory/panel` | GET | 内置最小面板 |
 
-路由位于 dsh 认证围栏内，默认仅 loopback。API 不提供推送，浏览器操作后自行刷新。
+路由位于 dsh 认证围栏内，默认仅 loopback。侧边栏客户端与 GUI 同源，因此直接使用当前登录会话；不再提供独立的 HTML 面板路由。
 
-内置面板是一个无构建依赖的单页应用，提供 Review、All、Search、Stats 四个视图，以及 verify / dispute / restore / pin / forget / resolve 操作。
+侧边栏包含四个视图：审核、全部、搜索、统计；支持验证、争议、恢复、置顶、静音、删除、读取，以及冲突的保留/合并/都保留操作。
+
+![侧边栏界面预览（模拟数据）](docs/assets/sidebar-panel.png)
 
 解决冲突示例：
 
@@ -364,7 +361,7 @@ inbox.claim()
 4. 校验字段、长度、kind/scope、evidence（逐字出现在转写中），去重后写入 `candidate`。
 5. 任一步失败静默处理，不影响会话。
 
-审核入口：`dsh-memory review`、面板 Review 标签，或直接调用 `/api/memory/review`。
+审核入口：`dsh-memory review`、右侧边栏的“记忆 → 审核”，或直接调用 `/api/memory/review`。
 
 即使关闭自动捕获，插件也会保留最近转写用于 `memory_write` 的 evidence 校验；没有可用转写时保留 evidence。
 
@@ -390,7 +387,7 @@ inbox.claim()
 - 小到中等规模（数千条）建议保持默认 JSON，部署简单。
 - 10k+ 或频繁重启时使用 `indexBackend: sqlite`，重开和内存占用更好；首次建库较慢。
 - 仅在确实需要单字 CJK 检索时开启 `cjkUnigrams`，它会明显增大 postings/FTS。
-- 面板按需加载，不进入搜索/注入热路径。
+- 侧边栏只在打开时渲染，不进入搜索/注入热路径。
 
 运行回归：
 
@@ -412,7 +409,7 @@ pnpm build
 |---|---|
 | `src/index.ts` | 插件入口、核心层 section、per-turn recall、审批钩子 |
 | `src/cli.ts` | `dsh-memory` CLI |
-| `src/panel.ts` | 无构建依赖的最小面板 HTML |
+| `src/client.js` | DSH 右侧边栏客户端（中文现代极简 UI） |
 | `src/store/` | 路径身份、frontmatter、清洗、存储、JSON/SQLite 索引、审计 |
 | `src/retrieval/` | 分词、BM25、评分、MMR |
 | `src/injection/` | 核心层缓存、recall、注入审计 |
@@ -432,7 +429,7 @@ pnpm build
 - **写入不是常数时间**：JSON 会重写 `index.json`，SQLite 会同步 scope 状态；10k 条时分别为百毫秒和数百毫秒级。
 - **检索没有向量模型**：当前是词法检索（BM25 + 元数据 + 词干）；embedding/hybrid 需要外部 provider，未内置。
 - **明文存储**：记忆文件与审计日志未加密；敏感环境应配合磁盘加密与访问控制。
-- **最小面板**：无 React 构建链，也不与 dsh 侧边栏集成；复杂交互仍以 CLI/API 为主。
+- **侧边栏依赖 DSH 右侧 Sidebar**：客户端注册 `sidebar.right.pane.tab`，需要 DSH 0.2.x 的右侧栏；没有独立 HTML 页面。
 - **共享默认目录**：与 `dsh-auto-memory` 同时使用时默认都指向 `$DSH_HOME/memory`，请为其中一个配置独立 `memoryDir`。
 - **CLI 硬删除**：`dsh-memory forget --hard` 不经过 dsh 审批，直接删除文件。
 

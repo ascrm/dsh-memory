@@ -1,7 +1,7 @@
 /**
  * 每条记忆唯一的写入入口。
  *
- * 所有变更路径（工具、面板 API、导入、自动捕获）都经过这个类。文件在按作用域的跨进程
+ * 所有变更路径（工具、侧边栏 API、导入、自动捕获）都经过这个类。文件在按作用域的跨进程
  * 锁保护下原子写入；`index.json` 只是尽力维护的派生物，过期时会从 Markdown 重建。
  */
 import { promises as fs } from 'node:fs'
@@ -1109,7 +1109,7 @@ export class MemoryStore {
     return this.finalizeSearch(scored, options, limit)
   }
 
-  /** 列出摘要，供调试和面板视图使用。 */
+  /** 列出摘要，供调试和侧边栏视图使用。 */
   async list(options: MemoryListOptions): Promise<Array<IndexedDoc & { scope: string }>> {
     const scopes = this.searchScopes({
       query: '',
@@ -1173,7 +1173,7 @@ export class MemoryStore {
     return { candidates, conflicts, stale, expired }
   }
 
-  /** 供面板使用的聚合计数。 */
+  /** 供侧边栏使用的聚合计数。 */
   async stats(projectScope?: MemoryScope): Promise<{
     scopes: Array<{
       scope: string
